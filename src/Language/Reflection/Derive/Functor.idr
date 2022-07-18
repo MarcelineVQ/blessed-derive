@@ -1,6 +1,6 @@
 module Language.Reflection.Derive.Functor
 
-import Data.Stream
+import public Data.Stream -- nats
 import public Control.Monad.State -- must make evalState available for elab
 
 import public Language.Reflection.Derive
@@ -48,9 +48,9 @@ Show Polarity where
   show Flip = "Flip"
 
 export
-not : Polarity -> Polarity
-not Norm = Flip
-not Flip = Norm
+neg : Polarity -> Polarity
+neg Norm = Flip
+neg Flip = Norm
 
 ||| Workhorse of the module, convert a type signature into a tree of tags
 ||| telling us what fields we need to construct for each implementation.
@@ -98,9 +98,11 @@ foldMapTagTree f (FunctionT p x y) = foldMapTagTree f x <+> foldMapTagTree f y
 export
 ttToTagTree : (targetType : TTImp) -> (typeSig : TTImp) -> TagTree
 ttToTagTree t v@(IVar fc nm) = if v == t then TargetT else SkipT
-ttToTagTree t (IPi fc rig pinfo mnm argTy retTy) = case (ttToTagTree t argTy) of
-    FunctionT p l r => FunctionT Norm (FunctionT (not p) l r) (ttToTagTree t retTy)
-    r => FunctionT Norm r (ttToTagTree t retTy)
+ttToTagTree t pi@(IPi fc rig pinfo mnm argTy retTy) = mkpi Norm pi
+  where
+    mkpi : Polarity -> TTImp -> TagTree
+    mkpi p (IPi _ _ _ _ argTy retTy) = FunctionT p (mkpi (neg p) argTy) (mkpi p retTy)
+    mkpi p tt = ttToTagTree t tt
 ttToTagTree t a@(IApp _ l r) = case unPair a of
     (x :: y :: zs) => TupleT (ttToTagTree t x, ttToTagTree t y, ttToTagTree t <$> zs)
     _             => AppT (ttToTagTree t l) (ttToTagTree t r)
@@ -135,7 +137,9 @@ mutual
   hasTarget' : TagTree -> Bool
   hasTarget' = foldTagTree False True (\x,y => hasTarget' x || hasTarget' y)
     (\x,y,zs => any hasTarget' (x :: y :: zs)) (\p,l,r => hasNegTargetTT (FunctionT p l r))
-  
+
+-- fafo3 : hasNegTargetTT (ttToTagTree `(b) `(((((b -> a) -> a) -> a) -> f (g b) -> g a -> f b))) = True -- odd -> = neg
+-- fafo3 = Refl
 
 hasFunctionT : TagTree -> Bool
 hasFunctionT = foldTagTree False False (\x,y => hasFunctionT x || hasFunctionT y)
@@ -163,12 +167,15 @@ pruneSkipped (FunctionT p x y) = case (pruneSkipped x, pruneSkipped y) of
     (SkipT,SkipT) => SkipT
     (l,r)         => FunctionT p l r
 
+-- TODO rename args to fields
+||| A data constructor from our type we're deriving for
 public export
 record FParamCon  where
   constructor MkFConField
   name : Name
   args : List (TagTree, ExplicitArg)
 
+||| Helper type collecting information we might need during deriving
 public export
 record FParamTypeInfo where
   constructor MkFParamTypeInfo
@@ -320,11 +327,12 @@ collectAndReplace tt =
     in  replaceNames rs tt
 
 -- TODO: clean up the var renaming process and investigate reification issue with NameMap and SortedMap
+-- TODO: rework this entirely to be clean like you did for tagging
 export
 oneHoleImplementationType : (iface : TTImp) -> (reqImpls : List Name) -> FParamTypeInfo -> DeriveUtil -> TTImp
 oneHoleImplementationType iface reqs fp g =
     let appIface = iface .$ fp.oneHoleType
-        functorVars = argTypesWithParamsAndApps (snd fp.holeType) g.argTypesWithParams
+        functorVars = nub $ argTypesWithParamsAndApps (snd fp.holeType) g.argTypesWithParams
         autoArgs = piAllAuto appIface $ map (iface .$) functorVars ++ map (\n => app (var n) fp.oneHoleType) reqs
         ty = piAllImplicit autoArgs (toList . map fst $ init fp.params)
     -- in collectAndReplace ty -- causing issues in cross-module elab atm, maybe due to namespace, or missing imports
@@ -358,18 +366,36 @@ fetchFreshVar s = do (x :: xs) <- get
                      () <- put xs
                      pure $ UN (Basic $ s ++ show x)
 
+natss : (Stream Nat,Stream Nat,Stream Nat)
+natss = (nats, nats, nats)
+
+fetchFreshVar' : MonadState (Stream Nat,Stream Nat,Stream Nat) m => TagTree -> m Name
+fetchFreshVar' tt = do z@(y :: ys, t :: ts, p :: ps) <- get
+                       case tt of
+                         (FunctionT _ _ _) => do
+                           () <- put (y :: ys, t :: ts, ps)
+                           pure $ UN (Basic $ "p" ++ show p)
+                         (TupleT _) => do
+                           () <- put (y :: ys, ts, p :: ps)
+                           pure $ UN (Basic $ "t" ++ show t)
+                         _ => do
+                           () <- put (ys, t :: ts, p :: ps)
+                           pure $ UN (Basic $ "y" ++ show y)
+
+
+-- TODO: revisit use of believe_me if it's causing issues with type resolution or repl evaluation
 ||| Bring together generated lhs/rhs patterns.
 ||| Handle cases of empty types or phantom types.
 ||| Foldable has a default value to result in so we don't use believe_me
 makeFImpl : Foldable t => Zippable t => FParamTypeInfo -> (isFoldable: Bool) -> t TTImp -> t TTImp -> TTImp
 makeFImpl fp isFold lhs rhs = lambdaArg "z" .=> (iCase (var "z") implicitFalse $
   case (isPhantom fp, length fp.cons, isFold) of
-    (_, 0,_)         => [impossibleClause `(_)  ] -- No cons, impossible to proceed
-    (True, _, False) => [`(_) .= `(believe_me z)] -- Var is phantom and not for Foldable, safely change type
-    _                => toList $ zipWith (.=) lhs rhs)
+    (_   ,0, _    ) => [impossibleClause `(_)  ] -- No cons, impossible to proceed
+    (True,_, False) => [`(_) .= `(believe_me z)] -- Var is phantom and not for Foldable, safely change type
+    _               => toList $ zipWith (.=) lhs rhs)
 
-genMapTT : FParamTypeInfo -> (target : Name) -> TTImp
-genMapTT fp t = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
+genMapTT : FParamTypeInfo -> TTImp
+genMapTT fp = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
   where
     ||| Stateful so that we can create unique variable names as we go
     ttGenMap : (tt : TagTree) -> (var : TTImp) -> State (Stream Nat) TTImp
@@ -392,8 +418,28 @@ genMapTT fp t = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
     rhss : Vect cc FParamCon -> Vect cc TTImp
     rhss = map (\pc => appAll pc.name (map (\(tag, arg) => evalState nats $ ttGenMap tag (toBasicName' arg.name)) pc.args))
 
+    -- ttGenMap : (tt : TagTree) -> (var : TTImp) -> State (Stream Nat,Stream Nat,Stream Nat) TTImp
+    -- ttGenMap SkipT x = pure x
+    -- ttGenMap TargetT x = pure `(f ~x)
+    -- ttGenMap (AppT l TargetT) x = pure `(map f ~x)
+    -- ttGenMap y@(AppT l r) x = do
+    --     n <- fetchFreshVar' y
+    --     pure $ `(map ~(lambdaArg n .=> !(ttGenMap r (var n))) ~x)
+    -- ttGenMap t@(TupleT (t1,t2,ts)) x = do
+    --     names <- map var <$> replicateA (2 + length ts) (fetchFreshVar' t)
+    --     let lhs = Vect.foldr1 (\n,acc => `(MkPair ~n ~acc)) names
+    --         tts = zip (t1 :: t2 :: fromList ts) names
+    --     rhs <- Vect.foldr1 (\l,r => `(MkPair ~l ~r)) <$> traverse (uncurry ttGenMap) tts
+    --     pure `(case ~x of ~lhs => ~rhs)
+    -- ttGenMap p@(FunctionT _ l r) x = do
+    --     n <- fetchFreshVar' p
+    --     pure $ lambdaArg n .=> !(ttGenMap r (x .$ !(ttGenMap l (var n))))
+
+    -- rhss : Vect cc FParamCon -> Vect cc TTImp
+    -- rhss = map (\pc => appAll pc.name (map (\(tag, arg) => evalState natss $ ttGenMap tag (toBasicName' arg.name)) pc.args))
+
 mkFunctorImpl : FParamTypeInfo -> TTImp
-mkFunctorImpl fp = `(MkFunctor $ \f => ~(genMapTT fp (fst fp.holeType)))
+mkFunctorImpl fp = `(MkFunctor $ \f => ~(genMapTT fp))
 
 ||| Derives a `Functor` implementation for the given data type
 ||| and visibility.
@@ -415,7 +461,7 @@ export
 Functor : DeriveUtil -> Elab InterfaceImpl
 Functor = FunctorVis Public
 
--- Should endo be exported for defaultFoldr?
+-- Should endo be exported for defaultFoldr? Seems ok
 [EndoS] Semigroup (a -> a) where
   f <+> g = \x => f (g x)
 
@@ -426,8 +472,8 @@ public export %inline
 defaultFoldr : Foldable t => (func : a -> b -> b) -> (init : b) -> (input : t a) -> b
 defaultFoldr f acc xs = foldMap @{%search} @{Endo} f xs acc
 
-genFoldMapTT : FParamTypeInfo -> (target : Name) -> TTImp
-genFoldMapTT fp t = makeFImpl fp True (expandLhs fp.cons) (rhss fp.cons)
+genFoldMapTT : FParamTypeInfo -> TTImp
+genFoldMapTT fp = makeFImpl fp True (expandLhs fp.cons) (rhss fp.cons)
   where
     ||| Stateful so that we can create unique variable names as we go
     ttGenFoldMap : (tt : TagTree) -> (var : TTImp) -> State (Stream Nat) TTImp
@@ -452,13 +498,17 @@ genFoldMapTT fp t = makeFImpl fp True (expandLhs fp.cons) (rhss fp.cons)
         cs@(_ :: _) => foldl1 (\acc,x => `(~acc <+> ~x))
           (map (\(tag, arg) => evalState nats $ ttGenFoldMap tag (toBasicName' arg.name)) cs))
 
--- Copied from base but this should actually quote a known Foldable somehow
--- edit it via field-name, to keep up-to-date automatically.
--- e.g.
--- let x : Foldbale (List Char)
---     x = %search
--- z <- quote x
--- impl = [edit foldr field and foldMap fields] z
+-- e.g :
+public export
+getBaseImplementation' : (x : Type) -> Elab x
+getBaseImplementation' implTy = do
+  tpe <- quote implTy
+  let d = `( let x = %search in the ~tpe x )
+  z <- check {expected=implTy} d
+  pure z
+
+-- Copied from base but this should actually quote a known Foldable somehow,
+-- like above, and edit it via field-name to keep up-to-date automatically.
 mkFoldableImpl : FParamTypeInfo -> TTImp
 mkFoldableImpl fp = `(MkFoldable 
                      defaultFoldr
@@ -466,7 +516,7 @@ mkFoldableImpl fp = `(MkFoldable
                      (\xs => foldr {acc = Lazy Bool} (\ _,_ => False) True xs)
                      (\fm,a0 => foldl (\ma, b => ma >>= flip fm b) (pure a0))
                      (foldr (::) [])
-                     (\f => ~(genFoldMapTT fp (fst fp.holeType)))
+                     (\f => ~(genFoldMapTT fp))
                      )
 
 ||| Derives a `Foldable` implementation for the given data type
@@ -489,8 +539,8 @@ export
 Foldable : DeriveUtil -> Elab InterfaceImpl
 Foldable = FoldableVis Public
 
-genTraverseTT : FParamTypeInfo -> (target : Name) -> TTImp
-genTraverseTT fp t = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
+genTraverseTT : FParamTypeInfo -> TTImp
+genTraverseTT fp = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
   where
     ||| Stateful so that we can create unique variable names as we go
     ttGenTraverse : (tt : TagTree) -> (var : TTImp) -> State (Stream Nat) TTImp
@@ -512,20 +562,11 @@ genTraverseTT fp t = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
     -- e.g. (\r,b => MkFoo x d r y b) <$> wap
     rhss : Vect cc FParamCon -> Vect cc TTImp
     rhss = map (\pc => foldl (\acc,x => `(~acc <*> ~x)) `(pure ~(var pc.name))
-             (map (\(tag, arg) => evalState nats $ ttGenTraverse tag (toBasicName' arg.name)) pc.args))
+             (map (\(tag, arg) =>
+               evalState nats $ ttGenTraverse tag (toBasicName' arg.name)) pc.args))
 
 mkTraversableImpl : FParamTypeInfo -> TTImp
-mkTraversableImpl fp = `(MkTraversable
-                        (\f => ~(genTraverseTT fp (fst fp.holeType)))
-                        )
-
-public export
-getBaseImplementation' : (x : Type) -> Elab x
-getBaseImplementation' implTy = do
-  tpe <- quote implTy
-  let d = `( let x = %search in the ~tpe x )
-  z <- check {expected=implTy} d
-  pure z
+mkTraversableImpl fp = `(MkTraversable (\f => ~(genTraverseTT fp )))
 
 ||| Derives a `Traversable` implementation for the given data type
 ||| and visibility.
