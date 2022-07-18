@@ -1,0 +1,18 @@
+package blessed-derive
+
+sourcedir   = "src"
+authors     = "MarcelineVQ"
+version    = 0.1.0
+readme     = "README.md"
+license    = "CC0 (refer to LICENSE file)"
+homepage    = "https://github.com/MarcelineVQ/idris2-blessed-derive"
+sourceloc   = "https://github.com/MarcelineVQ/idris2-blessed-derive.git"
+bugtracker  = "https://github.com/MarcelineVQ/idris2-blessed-derive/issues"
+
+sourcedir  = "src"
+depends    = base    >= 0.5.1
+           , elab-util >= 0.6.0
+
+modules = Language.Reflection.Blessed
+        , Language.Reflection.Derive.Functor
+        , Language.Reflection.Derive.Newtype
