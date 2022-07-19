@@ -286,35 +286,61 @@ nameSrc = numa nats
     numa (Z :: ns) = alpha `lappend` numa ns
     numa (n :: ns) = map (++ show n) alpha `lappend` numa ns
 
-forf : NameMap TTImp -> State (Stream String) (NameMap Name)
-forf nm = for nm $ \n => do
-    (v :: vs) <- get
-    put vs
-    pure (fromString v)
-
 export
 fetchNext : MonadState (Stream a) m => m a
 fetchNext = do (x :: xs) <- get
                () <- put xs
                pure x
-export
-roughDepth : TTImp -> Nat
-roughDepth = length . fst . unPi
 
-foof : MonadState (Stream String,Stream Nat) m => Vect n (Name, TTImp) -> m (NameMap Name)
-foof cn = do
-    r <- foldlM (\m,(n,tt) => case roughDepth tt of
-      0 => pure $ insert n (fromString !fetchNextL) m
-      1 => pure $ insert n (fromString . ("f" ++) . show $ !fetchNextR) m
-      2 => pure $ insert n (fromString . ("g" ++) . show $ !fetchNextR) m
-      _ => pure $ insert n (fromString . ("h" ++) . show $ !fetchNextR) m) SortedMap.empty cn
+
+-- TODO, have the impl gens use this as well
+||| Map of Strings to Stream Nat to provide endless, but per-string-sequential, variable names
+export
+VarSrc : Type
+VarSrc = SortedMap String (Stream Nat)
+
+srcVarToName : (String,Nat) -> Name
+srcVarToName (s,n) = UN . Basic $ (s ++ if n == 0 then "" else show n)
+
+export
+empty : VarSrc
+empty = SortedMap.empty
+
+||| evalState empty $ getNext' "b"                 === ("b",0)
+||| evalState empty $ getNext' "b" *> getNext' "b" === ("b",1)
+export
+getNext : MonadState VarSrc m => String -> m (String,Nat)
+getNext s = do
+    vm <- get
+    case lookup s vm of
+      Nothing        => do put (insert s (tail nats) vm); pure (s,0)
+      Just (v :: vs) => do put (insert s vs          vm); pure (s,v)
+
+||| Name variables of a type, preferring [a-e] for simple parameters, [f-h] for
+||| increasing levels of application, and ix for indices.
+nameParams : MonadState VarSrc m => Vect n (Name, TTImp) -> m (NameMap Name)
+nameParams cn = do
+    let depths = map (mapSnd classifyParam) (toList cn)
+        (ixs,rest) = partition ((== Ix) . snd) depths -- partition out ix-params (indices)
+        (flat,roughs) = partition ((== Flat) . snd) rest -- partition out simple-params vs applied-params
+        flatvars = zip flat (take (length flat) (cycle alpha)) -- assign each flat a simple var name
+    r <- foldlM (\m,((n,_),v) => pure $ insert n (srcVarToName !(getNext v)) m) SortedMap.empty flatvars
+    r <- foldlM (\m,(n,_) => pure $ insert n (srcVarToName !(getNext "ix")) m) r ixs
+    r <- foldlM (\m,(n,d) => case d of
+      Depth 1 => pure $ insert n (srcVarToName !(getNext "f")) m
+      Depth 2 => pure $ insert n (srcVarToName !(getNext "g")) m
+      _       => pure $ insert n (srcVarToName !(getNext "h")) m) r roughs
     pure r
   where
-    fetchNextL : forall a,b,m. MonadState (Stream a,Stream b) m => m a
-    fetchNextL = do (x :: xs, ys) <- get; () <- put (xs, ys); pure x
-
-    fetchNextR : forall a,b,m. MonadState (Stream a,Stream b) m => m b
-    fetchNextR = do (xs, y :: ys) <- get; () <- put (xs, ys); pure y
+    data Tag = Ix | Flat | Depth Nat
+    Eq Tag where Ix == Ix = True;Flat == Flat = True;Depth n == Depth m = n == m;_ == _ = False
+    alpha : List String
+    alpha = ["a","b","c","d","e"]
+    classifyParam : TTImp -> Tag
+    classifyParam tt = case mapFst (map Arg.type) (unPi tt) of
+      (ts@(_ :: _), _) => Depth (length ts) -- takes multiple args
+      ([], IType _) => Flat -- singular and Type
+      (_ , _) => Ix -- index
 
 -- TODO: rework this entirely to be clean like you did for tagging
 export
@@ -325,8 +351,7 @@ oneHoleImplementationType iface reqs fp g =
         autoArgs = piAllAuto appIface $ map (iface .$) functorVars ++ map (\n => app (var n) fp.oneHoleType) reqs
         ty = piAllImplicit autoArgs (toList . map fst $ init fp.params)
         cn = foldr (\(n,tt),acc => insert n tt acc) SortedMap.empty fp.params
-    -- in replaceNames (evalState nameSrc (forf cn)) ty
-    in replaceNames (evalState (nameSrc,nats) (foof fp.params)) ty
+    in replaceNames (evalState empty (nameParams fp.params)) ty
     -- in ty
 
 ------------------------------------------------------------
