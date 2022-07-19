@@ -147,7 +147,7 @@ mutual
 
 hasFunctionT : TagTree -> Bool
 hasFunctionT = foldTagTree False False (\x,y => hasFunctionT x || hasFunctionT y)
-                 (\x,y,zs => any hasFunctionT (x :: y :: zs)) (\_,_,_ => True)
+                 (\x,y,zs => any hasFunctionT (x :: y :: zs)) (\_,l,r => hasTarget' l || hasTarget' r)
 
 isSkipT : TagTree -> Bool
 isSkipT SkipT = True

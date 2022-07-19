@@ -18,7 +18,7 @@ but not `(((b -> a) -> a) -> b) i.e. (((n -> p) -> n) -> p)`
 or `((a -> b) -> b) i.e. (p -> n) -> p `  
 Note how in the disallowed cases it's because `b` is `n`egative.
 
-Function types are disallowed entirely in Foldable/Traversable instances.
+Function types which use the last parameter of the datatype are disallowed entirely in Foldable/Traversable instances.
 
 Deriving is straightforward:
 ```idris2
