@@ -2,7 +2,7 @@ package blessed-derive
 
 sourcedir   = "src"
 authors     = "MarcelineVQ"
-version    = 0.1.1
+version    = 0.1.
 readme     = "README.md"
 license    = "CC0 (refer to LICENSE file)"
 homepage    = "https://github.com/MarcelineVQ/blessed-derive"
@@ -11,6 +11,7 @@ bugtracker  = "https://github.com/MarcelineVQ/blessed-derive/issues"
 
 sourcedir  = "src"
 depends    = base    >= 0.5.1
+           , contrib >= 0.5.1 -- SortedMap
            , elab-util >= 0.6.0
 
 modules = Language.Reflection.Blessed

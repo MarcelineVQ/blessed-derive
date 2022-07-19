@@ -3,6 +3,10 @@ module Language.Reflection.Derive.Functor
 import public Data.Stream -- nats
 import public Control.Monad.State -- must make evalState available for elab
 
+-- import Data.SortedSet
+import public Data.SortedMap
+import public Data.SortedMap.Dependent
+
 import public Language.Reflection.Derive
 %language ElabReflection
 
@@ -252,46 +256,15 @@ makeFParamTypeInfo g = do
     splitLastVar (IApp _ y l) = (y,l)
     splitLastVar tt = (tt,tt)
 
--- SortedMap has issues reifying the use of lookup :(
--- So does this though, when accessed from another module, is it a namespace issue?
--- NameMap : Type -> Type
--- NameMap a = SortedMap Name a
-namespace NameMap
-  export
-  NameMap : Type -> Type
-  NameMap a = List (Name,a)
+-- CAn track rank here too if needed, to say that Type -> Type should be `f` and such
+-- Track name
+NameMap : Type -> Type
+NameMap x = SortedMap x x
 
-  -- nub gross, but we don't have all that many params to search
-  export
-  insert : Eq a => Name -> a -> NameMap a -> NameMap a
-  insert n1 n2 nm = nub $ (n1,n2) :: nm
+Ord Name where
+  compare x y = nameStr x `compare` nameStr y
 
-  export
-  lookup : Name -> NameMap a -> Maybe a
-  lookup n nm = List.lookup n nm
-
-  export
-  member : Name -> NameMap a -> Bool
-  member n nm = isJust $ NameMap.lookup n nm
-  
-  export
-  empty : NameMap a
-  empty = []
-
-  export
-  mapNameMap : (a -> b) -> NameMap a -> NameMap b
-  mapNameMap f nm = Prelude.map (\(x,y) => (x, f y)) nm
-
-  export
-  size : NameMap a -> Nat
-  size = length
-
-  export
-  withStrm : (a -> b -> c) -> NameMap a -> Stream b -> NameMap c
-  withStrm f [] (v :: vs) = []
-  withStrm f ((n,x) :: xs) (v :: vs) = (n, f x v) :: withStrm f xs vs
-
-
+-- Can't I just check params for the names?
 collectNames : NameMap Name -> TTImp -> NameMap Name
 collectNames m (IVar _ nm) = insert nm nm m
 collectNames m (IPi _ rig pinfo mnm argTy retTy)
@@ -306,25 +279,26 @@ replaceNames m (IPi fc rig pinfo mnm argTy retTy)
 replaceNames m (IApp fc s t) = IApp fc (replaceNames m s) (replaceNames m t)
 replaceNames m tt = tt
 
-lappend : List a -> Stream a -> Stream a
-lappend [] ss = ss
-lappend (x :: xs) ss = x :: lappend xs ss
-
+export
 nameSrc : Stream String
 nameSrc = numa nats
   where
+    lappend : List a -> Lazy (Stream a) -> Stream a
+    lappend [] ss = ss
+    lappend (x :: xs) ss = x :: lappend xs ss
+
     alpha : List String
     alpha = ["a","b","c","d","e"]
+
     numa : Stream Nat -> Stream String
     numa (Z :: ns) = alpha `lappend` numa ns
     numa (n :: ns) = map (++ show n) alpha `lappend` numa ns
 
-export
-collectAndReplace : TTImp -> TTImp
-collectAndReplace tt =
-    let d = collectNames (empty {a=Name}) tt
-        rs = withStrm (\x,y => case x of MN _ _ => fromString y; _ => x) d nameSrc
-    in  replaceNames rs tt
+forf : NameMap Name -> State (Stream String) (NameMap Name)
+forf nm = for nm $ \n => do
+    (v :: vs) <- get
+    put vs
+    pure (fromString v)
 
 -- TODO: clean up the var renaming process and investigate reification issue with NameMap and SortedMap
 -- TODO: rework this entirely to be clean like you did for tagging
@@ -335,8 +309,8 @@ oneHoleImplementationType iface reqs fp g =
         functorVars = nub $ argTypesWithParamsAndApps (snd fp.holeType) g.argTypesWithParams
         autoArgs = piAllAuto appIface $ map (iface .$) functorVars ++ map (\n => app (var n) fp.oneHoleType) reqs
         ty = piAllImplicit autoArgs (toList . map fst $ init fp.params)
-    -- in collectAndReplace ty -- causing issues in cross-module elab atm, maybe due to namespace, or missing imports
-    in ty -- no renaming
+        cn = foldr (\x,acc => insert x x acc) empty (map fst fp.params)
+    in replaceNames (evalState nameSrc (forf cn)) ty
 
 ------------------------------------------------------------
 -- Failure reporting
