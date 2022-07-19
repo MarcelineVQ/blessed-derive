@@ -256,21 +256,13 @@ makeFParamTypeInfo g = do
     splitLastVar (IApp _ y l) = (y,l)
     splitLastVar tt = (tt,tt)
 
--- CAn track rank here too if needed, to say that Type -> Type should be `f` and such
--- Track name
+-- Track name and rough app depth
 NameMap : Type -> Type
-NameMap x = SortedMap x x
+NameMap t = SortedMap Name t
 
+private
 Ord Name where
   compare x y = nameStr x `compare` nameStr y
-
--- Can't I just check params for the names?
-collectNames : NameMap Name -> TTImp -> NameMap Name
-collectNames m (IVar _ nm) = insert nm nm m
-collectNames m (IPi _ rig pinfo mnm argTy retTy)
-  = foldl {t=List} collectNames (maybe m (\n => insert n n m) mnm) [argTy,retTy]
-collectNames m (IApp _ s t) = foldl {t=List} collectNames m [s,t]
-collectNames m _ = m
 
 replaceNames : NameMap Name -> TTImp -> TTImp
 replaceNames m (IVar fc nm) = IVar fc $ fromMaybe nm (lookup nm m)
@@ -294,13 +286,36 @@ nameSrc = numa nats
     numa (Z :: ns) = alpha `lappend` numa ns
     numa (n :: ns) = map (++ show n) alpha `lappend` numa ns
 
-forf : NameMap Name -> State (Stream String) (NameMap Name)
+forf : NameMap TTImp -> State (Stream String) (NameMap Name)
 forf nm = for nm $ \n => do
     (v :: vs) <- get
     put vs
     pure (fromString v)
 
--- TODO: clean up the var renaming process and investigate reification issue with NameMap and SortedMap
+export
+fetchNext : MonadState (Stream a) m => m a
+fetchNext = do (x :: xs) <- get
+               () <- put xs
+               pure x
+export
+roughDepth : TTImp -> Nat
+roughDepth = length . fst . unPi
+
+foof : MonadState (Stream String,Stream Nat) m => Vect n (Name, TTImp) -> m (NameMap Name)
+foof cn = do
+    r <- foldlM (\m,(n,tt) => case roughDepth tt of
+      0 => pure $ insert n (fromString !fetchNextL) m
+      1 => pure $ insert n (fromString . ("f" ++) . show $ !fetchNextR) m
+      2 => pure $ insert n (fromString . ("g" ++) . show $ !fetchNextR) m
+      _ => pure $ insert n (fromString . ("h" ++) . show $ !fetchNextR) m) SortedMap.empty cn
+    pure r
+  where
+    fetchNextL : forall a,b,m. MonadState (Stream a,Stream b) m => m a
+    fetchNextL = do (x :: xs, ys) <- get; () <- put (xs, ys); pure x
+
+    fetchNextR : forall a,b,m. MonadState (Stream a,Stream b) m => m b
+    fetchNextR = do (xs, y :: ys) <- get; () <- put (xs, ys); pure y
+
 -- TODO: rework this entirely to be clean like you did for tagging
 export
 oneHoleImplementationType : (iface : TTImp) -> (reqImpls : List Name) -> FParamTypeInfo -> DeriveUtil -> TTImp
@@ -309,8 +324,10 @@ oneHoleImplementationType iface reqs fp g =
         functorVars = nub $ argTypesWithParamsAndApps (snd fp.holeType) g.argTypesWithParams
         autoArgs = piAllAuto appIface $ map (iface .$) functorVars ++ map (\n => app (var n) fp.oneHoleType) reqs
         ty = piAllImplicit autoArgs (toList . map fst $ init fp.params)
-        cn = foldr (\x,acc => insert x x acc) empty (map fst fp.params)
-    in replaceNames (evalState nameSrc (forf cn)) ty
+        cn = foldr (\(n,tt),acc => insert n tt acc) SortedMap.empty fp.params
+    -- in replaceNames (evalState nameSrc (forf cn)) ty
+    in replaceNames (evalState (nameSrc,nats) (foof fp.params)) ty
+    -- in ty
 
 ------------------------------------------------------------
 -- Failure reporting
@@ -336,26 +353,7 @@ expandLhs : Vect cc FParamCon -> Vect cc TTImp
 expandLhs = map (\pc => appNames pc.name (map (toBasicName . name . snd) pc.args))
 
 fetchFreshVar : MonadState (Stream Nat) m => String -> m Name
-fetchFreshVar s = do (x :: xs) <- get
-                     () <- put xs
-                     pure $ UN (Basic $ s ++ show x)
-
-natss : (Stream Nat,Stream Nat,Stream Nat)
-natss = (nats, nats, nats)
-
-fetchFreshVar' : MonadState (Stream Nat,Stream Nat,Stream Nat) m => TagTree -> m Name
-fetchFreshVar' tt = do z@(y :: ys, t :: ts, p :: ps) <- get
-                       case tt of
-                         (FunctionT _ _ _) => do
-                           () <- put (y :: ys, t :: ts, ps)
-                           pure $ UN (Basic $ "p" ++ show p)
-                         (TupleT _) => do
-                           () <- put (y :: ys, ts, p :: ps)
-                           pure $ UN (Basic $ "t" ++ show t)
-                         _ => do
-                           () <- put (ys, t :: ts, p :: ps)
-                           pure $ UN (Basic $ "y" ++ show y)
-
+fetchFreshVar s = pure $ UN (Basic $ s ++ show !fetchNext)
 
 -- TODO: revisit use of believe_me if it's causing issues with type resolution or repl evaluation
 ||| Bring together generated lhs/rhs patterns.
