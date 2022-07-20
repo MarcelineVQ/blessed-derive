@@ -26,8 +26,11 @@ import Language.Reflection.Blessed
 
 %language ElabReflection
 
-data Foo f a b = MkFoo (f b) a
-%runElab derive [Functor, Foldable, Traversable]
+data Foo : (Type -> Type) -> Type -> Type -> Type where
+  MkFoo : f b -> a -> Foo f a b
+
+%runElab derive "Foo" [Functor, Foldable, Traversable]
+
 ```
 
 If you're instead looking for generics check out the sop package linked below.
