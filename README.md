@@ -29,14 +29,14 @@ import Language.Reflection.Blessed
 data Foo : (Type -> Type) -> Type -> Type -> Type where
   MkFoo : f b -> a -> Foo f a b
 
-%runElab derive "Foo" [Functor, Foldable, Traversable]
+%runElab deriveBlessed "Foo" [Functor, Foldable, Traversable]
 ```
 
 If you're instead looking for generics check out the sop package linked below.
 
 ## Issues
 
-The largest issue with this as it stands is that there's no warning for missing instances until use. For example you can derive Traversable without deriving Foldable, but won't get an error until you actually use traverse.
+The largest issue with this as it stands is that there's no warning for clashing instances until use. You can define Functor yourself and also derive it but there won't be an error until you use map. There may be a clue for solving that in the error you get about defaultFoldr when having clashing Foldables.
 
 This doesn't derive indexed types yet, but there's no reason it can't be made to.
 

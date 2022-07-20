@@ -1,5 +1,7 @@
 module Language.Reflection.Derive.Functor
 
+import Language.Reflection.Derive.Derive
+
 import public Data.Stream -- nats
 import public Control.Monad.State -- must make evalState available for elab
 
@@ -556,6 +558,16 @@ genTraverseTT fp = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
 mkTraversableImpl : FParamTypeInfo -> TTImp
 mkTraversableImpl fp = `(MkTraversable (\f,z => ~(genTraverseTT fp )))
 
+-- Checker for whether an implementation exists
+-- This is pretty gross as it litters the namespace
+-- Also sadly this won't work as elab-util:derive is written since generation occurs all
+-- at once despite declaration being separated into two phases.
+checkHasImpl : String -> String -> Name -> TTImp -> Elab ()
+checkHasImpl imp req n' tytt = do
+    let n = fromString "implSearch\{imp}\{req}\{nameStr n'}"
+    declare $ [claim MW Private [] n tytt
+              , def n [ var n .= ISearch EmptyFC 1000]]
+
 ||| Derives a `Traversable` implementation for the given data type
 ||| and visibility.
 export
@@ -566,6 +578,10 @@ TraversableVis vis g = do
     Just fp <- pure $ makeFParamTypeInfo g
       | _ => fail (oneHoleFail iname dtName)
     let allFields = concatMap (map fst . args) fp.cons
+    let depsFo = oneHoleImplementationType `(Foldable) [] fp g
+    let depsFu = oneHoleImplementationType `(Functor) [] fp g
+    () <- checkHasImpl "Traversable" "Foldable" fp.name depsFo
+    () <- checkHasImpl "Traversable" "Functor" fp.name depsFu
     when (any hasFunctionT allFields) $ fail (piFail iname dtName) -- reject uses of the hole type in functions
     pure $ MkInterfaceImpl iname vis []
              (mkTraversableImpl fp)
