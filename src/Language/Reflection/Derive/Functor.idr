@@ -7,6 +7,8 @@ import public Control.Monad.State -- must make evalState available for elab
 import public Data.SortedMap
 import public Data.SortedMap.Dependent
 
+import public Language.Reflection.Pretty
+
 import public Language.Reflection.Derive
 %language ElabReflection
 
@@ -175,7 +177,7 @@ pruneSkipped (FunctionT p x y) = case (pruneSkipped x, pruneSkipped y) of
 ||| A data constructor from our type we're deriving for
 public export
 record FParamCon  where
-  constructor MkFConField
+  constructor MkFParamCon
   name : Name
   args : List (TagTree, ExplicitArg)
 
@@ -238,7 +240,7 @@ isPhantom fp = all (not . hasTarget) $ concatMap (map fst . args) fp.cons
 ||| Prune any branches that don't use our target type
 makeFParamCon : (holeType : Name) -> ParamCon -> FParamCon
 makeFParamCon t (MkParamCon name explicitArgs) =
-  MkFConField name $ map (\r => (pruneSkipped $ ttToTagTree (var t) r.tpe, r)) explicitArgs
+  MkFParamCon name $ map (\r => (pruneSkipped $ ttToTagTree (var t) r.tpe, r)) explicitArgs
 
 -- Failure implies its not a `Type -> Type` type
 export
@@ -511,6 +513,7 @@ genTraverseTT : FParamTypeInfo -> TTImp
 genTraverseTT fp = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
   where
     ||| Stateful so that we can create unique variable names as we go
+    export
     ttGenTraverse : MonadState VarSrc m => (tt : TagTree) -> (var : TTImp) -> m TTImp
     ttGenTraverse SkipT x = pure `(pure ~x)
     ttGenTraverse TargetT x = pure `(f ~x)
@@ -526,12 +529,29 @@ genTraverseTT fp = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
         pure `(case ~x of ~lhs => ~rhs)
     ttGenTraverse (FunctionT _ l r) x = pure `(Traverse_Derive_Error_Report_This) -- can't actually happen
 
-    -- TODO recheck ghc notes, there's a better way to implement this rhs that avoids frontloaded pure+<*>
-    -- e.g. (\r,b => MkFoo x d r y b) <$> wap
+    ||| Construct a function to lead the <*> chain
+    ||| Saves on some redundant uses of pure and <*>, e.g.:
+    ||| data Foo f a b c = MkFoo a (f b) (f c)
+    |||    traverse (MkFoo a b c) = pure MkFoo <*> pure a <*> b <*> c
+    ||| vs traverse (MkFoo a b c) = (\b',c' => MkFoo a b' c') <$> b <*> c
+    export
+    conFunc : MonadState VarSrc m => FParamCon -> m TTImp
+    conFunc pc = do
+        (body,names) <- foldlM {acc=(TTImp,List Name)} (\(tt,ns),(tag,arg) => if isSkipT tag
+                    then pure $ (tt .$ toBasicName' arg.name, ns)
+                    else do n <- srcVarToName' <$> getNext "arg"
+                            pure $ ((tt .$ var n), n :: ns)) (var pc.name,[]) pc.args
+        pure $ foldl (\tt,sn => lambdaArg sn .=> tt) body names
+
+    export
     rhss : Vect cc FParamCon -> Vect cc TTImp
-    rhss = map (\pc => foldl (\acc,x => `(~acc <*> ~x)) `(pure ~(var pc.name))
-             (map (\(tag, arg) =>
-               evalState empty $ ttGenTraverse tag (toBasicName' arg.name)) pc.args))
+    rhss = map (\pc => evalState empty $ do
+        aps <- traverse (\(tag, arg) =>
+                    ttGenTraverse tag (toBasicName' arg.name)) (filter (not . isSkipT . fst) pc.args)
+        rc <- conFunc pc
+        case aps of -- reapply lhs under pure if all vars are SkipT
+          [] => pure $ `(pure) .$ appNames pc.name (map (toBasicName . name . snd) pc.args)
+          (a :: aps) => pure $ foldl (\acc,x => `(~acc <*> ~x)) `(~rc <$> ~a) aps)
 
 mkTraversableImpl : FParamTypeInfo -> TTImp
 mkTraversableImpl fp = `(MkTraversable (\f,z => ~(genTraverseTT fp )))
