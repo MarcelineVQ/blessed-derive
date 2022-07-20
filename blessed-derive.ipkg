@@ -2,7 +2,7 @@ package blessed-derive
 
 sourcedir   = "src"
 authors     = "MarcelineVQ"
-version    = 0.1.5
+version    = 0.1.6
 readme     = "README.md"
 license    = "CC0 (refer to LICENSE file)"
 homepage    = "https://github.com/MarcelineVQ/blessed-derive"

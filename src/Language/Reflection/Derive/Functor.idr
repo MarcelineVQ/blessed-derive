@@ -256,7 +256,36 @@ makeFParamTypeInfo g = do
     splitLastVar (IApp _ y l) = (y,l)
     splitLastVar tt = (tt,tt)
 
--- Track name and rough app depth
+--------------------------------------------------
+-- Name Map and Fresh Varible Source
+--------------------------------------------------
+
+||| Map of Strings to Stream Nat to provide endless, but per-string-sequential, variable names
+export
+VarSrc : Type
+VarSrc = SortedMap String (Stream Nat)
+
+srcVarToName : (String,Nat) -> Name
+srcVarToName (s,n) = UN . Basic $ (s ++ if n == 0 then "" else show n)
+
+srcVarToName' : (String,Nat) -> Name
+srcVarToName' (s,n) = UN . Basic $ (s ++ show n)
+
+export
+empty : VarSrc
+empty = SortedMap.empty
+
+||| evalState empty $ getNext' "b"                 === ("b",0)
+||| evalState empty $ getNext' "b" *> getNext' "b" === ("b",1)
+export
+getNext : MonadState VarSrc m => String -> m (String,Nat)
+getNext s = do
+    vm <- get
+    case lookup s vm of
+      Nothing        => do put (insert s (tail nats) vm); pure (s,0)
+      Just (v :: vs) => do put (insert s vs          vm); pure (s,v)
+
+-- Track name and some associated data
 NameMap : Type -> Type
 NameMap t = SortedMap Name t
 
@@ -272,49 +301,10 @@ replaceNames m (IApp fc s t) = IApp fc (replaceNames m s) (replaceNames m t)
 replaceNames m tt = tt
 
 export
-nameSrc : Stream String
-nameSrc = numa nats
-  where
-    lappend : List a -> Lazy (Stream a) -> Stream a
-    lappend [] ss = ss
-    lappend (x :: xs) ss = x :: lappend xs ss
-
-    alpha : List String
-    alpha = ["a","b","c","d","e"]
-
-    numa : Stream Nat -> Stream String
-    numa (Z :: ns) = alpha `lappend` numa ns
-    numa (n :: ns) = map (++ show n) alpha `lappend` numa ns
-
-export
 fetchNext : MonadState (Stream a) m => m a
 fetchNext = do (x :: xs) <- get
                () <- put xs
                pure x
-
-
--- TODO, have the impl gens use this as well
-||| Map of Strings to Stream Nat to provide endless, but per-string-sequential, variable names
-export
-VarSrc : Type
-VarSrc = SortedMap String (Stream Nat)
-
-srcVarToName : (String,Nat) -> Name
-srcVarToName (s,n) = UN . Basic $ (s ++ if n == 0 then "" else show n)
-
-export
-empty : VarSrc
-empty = SortedMap.empty
-
-||| evalState empty $ getNext' "b"                 === ("b",0)
-||| evalState empty $ getNext' "b" *> getNext' "b" === ("b",1)
-export
-getNext : MonadState VarSrc m => String -> m (String,Nat)
-getNext s = do
-    vm <- get
-    case lookup s vm of
-      Nothing        => do put (insert s (tail nats) vm); pure (s,0)
-      Just (v :: vs) => do put (insert s vs          vm); pure (s,v)
 
 ||| Name variables of a type, preferring [a-e] for simple parameters, [f-h] for
 ||| increasing levels of application, and ix for indices.
@@ -333,7 +323,7 @@ nameParams cn = do
     pure r
   where
     data Tag = Ix | Flat | Depth Nat
-    Eq Tag where Ix == Ix = True;Flat == Flat = True;Depth n == Depth m = n == m;_ == _ = False
+    Eq Tag where Ix == Ix = True;Flat == Flat = True;Depth _ == Depth _ = True;_ == _ = False
     alpha : List String
     alpha = ["a","b","c","d","e"]
     classifyParam : TTImp -> Tag
@@ -342,7 +332,7 @@ nameParams cn = do
       ([], IType _) => Flat -- singular and Type
       (_ , _) => Ix -- index
 
--- TODO: rework this entirely to be clean like you did for tagging
+-- TODO: rework this entirely to be clean like you did for tree tagging
 export
 oneHoleImplementationType : (iface : TTImp) -> (reqImpls : List Name) -> FParamTypeInfo -> DeriveUtil -> TTImp
 oneHoleImplementationType iface reqs fp g =
@@ -385,58 +375,39 @@ fetchFreshVar s = pure $ UN (Basic $ s ++ show !fetchNext)
 ||| Handle cases of empty types or phantom types.
 ||| Foldable has a default value to result in so we don't use believe_me
 makeFImpl : Foldable t => Zippable t => FParamTypeInfo -> (isFoldable: Bool) -> t TTImp -> t TTImp -> TTImp
-makeFImpl fp isFold lhs rhs = lambdaArg "z" .=> (iCase (var "z") implicitFalse $
-  case (isPhantom fp, length fp.cons, isFold) of
-    (_   ,0, _    ) => [impossibleClause `(_)  ] -- No cons, impossible to proceed
-    (True,_, False) => [`(_) .= `(believe_me z)] -- Var is phantom and not for Foldable, safely change type
-    _               => toList $ zipWith (.=) lhs rhs)
+makeFImpl fp isFold lhs rhs = iCase (var "z") implicitFalse $
+  case (isPhantom fp, null fp.cons, isFold) of
+    (_   ,True,_    ) => [impossibleClause `(_)  ] -- No cons, impossible to proceed
+    (True,_   ,False) => [`(_) .= `(believe_me z)] -- Var is phantom and not for Foldable, safely change type
+    _                 => toList $ zipWith (.=) lhs rhs
 
 genMapTT : FParamTypeInfo -> TTImp
 genMapTT fp = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
   where
     ||| Stateful so that we can create unique variable names as we go
-    ttGenMap : (tt : TagTree) -> (var : TTImp) -> State (Stream Nat) TTImp
+    ttGenMap : MonadState VarSrc m => (tt : TagTree) -> (var : TTImp) -> m TTImp
     ttGenMap SkipT x = pure x
     ttGenMap TargetT x = pure `(f ~x)
     ttGenMap (AppT l TargetT) x = pure `(map f ~x)
     ttGenMap (AppT l r) x = do
-        n <- fetchFreshVar "y"
+        n <- srcVarToName' <$> getNext "y"
         pure $ `(map ~(lambdaArg n .=> !(ttGenMap r (var n))) ~x)
     ttGenMap (TupleT (t1,t2,ts)) x = do
-        names <- map var <$> replicateA (2 + length ts) (fetchFreshVar "t")
+        names <- map var <$> replicateA (2 + length ts) (srcVarToName' <$> getNext "t")
         let lhs = Vect.foldr1 (\n,acc => `(MkPair ~n ~acc)) names
             tts = zip (t1 :: t2 :: fromList ts) names
         rhs <- Vect.foldr1 (\l,r => `(MkPair ~l ~r)) <$> traverse (uncurry ttGenMap) tts
         pure `(case ~x of ~lhs => ~rhs)
     ttGenMap (FunctionT _ l r) x = do
-        n <- fetchFreshVar "p"
+        n <- srcVarToName' <$> getNext "p"
         pure $ lambdaArg n .=> !(ttGenMap r (x .$ !(ttGenMap l (var n))))
 
     rhss : Vect cc FParamCon -> Vect cc TTImp
-    rhss = map (\pc => appAll pc.name (map (\(tag, arg) => evalState nats $ ttGenMap tag (toBasicName' arg.name)) pc.args))
+    rhss = map (\pc => appAll pc.name (map (\(tag, arg) => evalState empty $ ttGenMap tag (toBasicName' arg.name)) pc.args))
 
-    -- ttGenMap : (tt : TagTree) -> (var : TTImp) -> State (Stream Nat,Stream Nat,Stream Nat) TTImp
-    -- ttGenMap SkipT x = pure x
-    -- ttGenMap TargetT x = pure `(f ~x)
-    -- ttGenMap (AppT l TargetT) x = pure `(map f ~x)
-    -- ttGenMap y@(AppT l r) x = do
-    --     n <- fetchFreshVar' y
-    --     pure $ `(map ~(lambdaArg n .=> !(ttGenMap r (var n))) ~x)
-    -- ttGenMap t@(TupleT (t1,t2,ts)) x = do
-    --     names <- map var <$> replicateA (2 + length ts) (fetchFreshVar' t)
-    --     let lhs = Vect.foldr1 (\n,acc => `(MkPair ~n ~acc)) names
-    --         tts = zip (t1 :: t2 :: fromList ts) names
-    --     rhs <- Vect.foldr1 (\l,r => `(MkPair ~l ~r)) <$> traverse (uncurry ttGenMap) tts
-    --     pure `(case ~x of ~lhs => ~rhs)
-    -- ttGenMap p@(FunctionT _ l r) x = do
-    --     n <- fetchFreshVar' p
-    --     pure $ lambdaArg n .=> !(ttGenMap r (x .$ !(ttGenMap l (var n))))
-
-    -- rhss : Vect cc FParamCon -> Vect cc TTImp
-    -- rhss = map (\pc => appAll pc.name (map (\(tag, arg) => evalState natss $ ttGenMap tag (toBasicName' arg.name)) pc.args))
 
 mkFunctorImpl : FParamTypeInfo -> TTImp
-mkFunctorImpl fp = `(MkFunctor $ \f => ~(genMapTT fp))
+mkFunctorImpl fp = `(MkFunctor $ \f,z => ~(genMapTT fp))
 
 ||| Derives a `Functor` implementation for the given data type
 ||| and visibility.
@@ -473,15 +444,15 @@ genFoldMapTT : FParamTypeInfo -> TTImp
 genFoldMapTT fp = makeFImpl fp True (expandLhs fp.cons) (rhss fp.cons)
   where
     ||| Stateful so that we can create unique variable names as we go
-    ttGenFoldMap : (tt : TagTree) -> (var : TTImp) -> State (Stream Nat) TTImp
+    ttGenFoldMap : MonadState VarSrc m => (tt : TagTree) -> (var : TTImp) -> m TTImp
     ttGenFoldMap SkipT x = pure `(neutral)
     ttGenFoldMap TargetT x = pure `(f ~x)
     ttGenFoldMap (AppT l TargetT) x = pure `(foldMap f ~x)
     ttGenFoldMap (AppT l r) x = do
-        n <- fetchFreshVar "y"
+        n <- srcVarToName' <$> getNext "y"
         pure $ `(foldMap ~(lambdaArg n .=> !(ttGenFoldMap r (var n))) ~x)
     ttGenFoldMap (TupleT (t1,t2,ts)) x = do
-        names <- map var <$> replicateA (2 + length ts) (fetchFreshVar "t")
+        names <- map var <$> replicateA (2 + length ts) (srcVarToName' <$> getNext "t")
         let lhs = Vect.foldr1 (\n,acc => `(MkPair ~n ~acc)) names
             tts = zip (t1 :: t2 :: fromList ts) names
         rhs <- Vect.foldr1 (\acc,x => `(~acc <+> ~x)) <$> traverse (uncurry ttGenFoldMap) tts
@@ -493,7 +464,7 @@ genFoldMapTT fp = makeFImpl fp True (expandLhs fp.cons) (rhss fp.cons)
     rhss = map (\pc => case filter (not . isSkipT . fst) pc.args of
         [] => `(neutral) -- foldl1 instead of foldl to avoid extra <+> on neutral
         cs@(_ :: _) => foldl1 (\acc,x => `(~acc <+> ~x))
-          (map (\(tag, arg) => evalState nats $ ttGenFoldMap tag (toBasicName' arg.name)) cs))
+          (map (\(tag, arg) => evalState empty $ ttGenFoldMap tag (toBasicName' arg.name)) cs))
 
 -- e.g :
 public export
@@ -513,7 +484,7 @@ mkFoldableImpl fp = `(MkFoldable
                      (\xs => foldr {acc = Lazy Bool} (\ _,_ => False) True xs)
                      (\fm,a0 => foldl (\ma, b => ma >>= flip fm b) (pure a0))
                      (foldr (::) [])
-                     (\f => ~(genFoldMapTT fp))
+                     (\f,z => ~(genFoldMapTT fp))
                      )
 
 ||| Derives a `Foldable` implementation for the given data type
@@ -540,15 +511,15 @@ genTraverseTT : FParamTypeInfo -> TTImp
 genTraverseTT fp = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
   where
     ||| Stateful so that we can create unique variable names as we go
-    ttGenTraverse : (tt : TagTree) -> (var : TTImp) -> State (Stream Nat) TTImp
+    ttGenTraverse : MonadState VarSrc m => (tt : TagTree) -> (var : TTImp) -> m TTImp
     ttGenTraverse SkipT x = pure `(pure ~x)
     ttGenTraverse TargetT x = pure `(f ~x)
     ttGenTraverse (AppT l TargetT) x = pure `(traverse f ~x)
     ttGenTraverse (AppT l r) x = do
-        n <- fetchFreshVar "y"
+        n <- srcVarToName' <$> getNext "y"
         pure $ `(traverse ~(lambdaArg n .=> !(ttGenTraverse r (var n))) ~x)
     ttGenTraverse (TupleT (t1,t2,ts)) x = do
-        names <- map var <$> replicateA (2 + length ts) (fetchFreshVar "t")
+        names <- map var <$> replicateA (2 + length ts) (srcVarToName' <$> getNext "t")
         let lhs = Vect.foldr1 (\n,acc => `(MkPair ~n ~acc)) names
             tts = zip (t1 :: t2 :: fromList ts) names
         rhs <- Vect.foldr1 (\acc,x => `(~acc <*> ~x)) <$> traverse (uncurry ttGenTraverse) tts
@@ -560,10 +531,10 @@ genTraverseTT fp = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
     rhss : Vect cc FParamCon -> Vect cc TTImp
     rhss = map (\pc => foldl (\acc,x => `(~acc <*> ~x)) `(pure ~(var pc.name))
              (map (\(tag, arg) =>
-               evalState nats $ ttGenTraverse tag (toBasicName' arg.name)) pc.args))
+               evalState empty $ ttGenTraverse tag (toBasicName' arg.name)) pc.args))
 
 mkTraversableImpl : FParamTypeInfo -> TTImp
-mkTraversableImpl fp = `(MkTraversable (\f => ~(genTraverseTT fp )))
+mkTraversableImpl fp = `(MkTraversable (\f,z => ~(genTraverseTT fp )))
 
 ||| Derives a `Traversable` implementation for the given data type
 ||| and visibility.
