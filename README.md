@@ -30,19 +30,13 @@ data Foo : (Type -> Type) -> Type -> Type -> Type where
   MkFoo : f b -> a -> Foo f a b
 
 %runElab derive "Foo" [Functor, Foldable, Traversable]
-
 ```
 
 If you're instead looking for generics check out the sop package linked below.
 
 ## Issues
 
-The largest issue with this as it stands is interaction with other instances.  
-The two major ones so far are:
-- If you derive Foldable and then define Traversable yourself, Idris will complain that there's no Foldable instance defined.
-- There's no warning for missing instances until use. For example you can derive Traversable without deriving Foldable, but won't get an error until you actually use traverse.
-
-I expect both are symptoms of the same underlying issue which is that we're generating hints for the search that occurs when using overloaded functions, but that's all we're doing. Idris typeclass generation has some extra steps we don't do, and might not even have access to at this time. More research is needed.
+The largest issue with this as it stands is that there's no warning for missing instances until use. For example you can derive Traversable without deriving Foldable, but won't get an error until you actually use traverse.
 
 This doesn't derive indexed types yet, but there's no reason it can't be made to.
 

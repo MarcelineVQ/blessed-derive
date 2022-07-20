@@ -537,21 +537,21 @@ genTraverseTT fp = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
     export
     conFunc : MonadState VarSrc m => FParamCon -> m TTImp
     conFunc pc = do
-        (body,names) <- foldlM {acc=(TTImp,List Name)} (\(tt,ns),(tag,arg) => if isSkipT tag
+        (body,names) <- foldlM (\(tt,ns),(tag,arg) => if isSkipT tag
                     then pure $ (tt .$ toBasicName' arg.name, ns)
-                    else do n <- srcVarToName' <$> getNext "arg"
+                    else do n <- srcVarToName' <$> getNext "larg"
                             pure $ ((tt .$ var n), n :: ns)) (var pc.name,[]) pc.args
-        pure $ foldl (\tt,sn => lambdaArg sn .=> tt) body names
+        pure $ foldl (\tt,sn => lambdaArg sn .=> tt) body (the (List Name) names)
 
     export
     rhss : Vect cc FParamCon -> Vect cc TTImp
-    rhss = map (\pc => evalState empty $ do
-        aps <- traverse (\(tag, arg) =>
-                    ttGenTraverse tag (toBasicName' arg.name)) (filter (not . isSkipT . fst) pc.args)
+    rhss = map $ \pc => evalState empty $ do
+        (a :: aps) <- traverse (\(tag, arg) =>
+          ttGenTraverse tag (toBasicName' arg.name)) (filter (not . isSkipT . fst) pc.args)
+                  -- reapply lhs under pure if all vars are SkipT
+          | [] => pure $ `(pure) .$ appNames pc.name (toBasicName . name . snd <$> pc.args)
         rc <- conFunc pc
-        case aps of -- reapply lhs under pure if all vars are SkipT
-          [] => pure $ `(pure) .$ appNames pc.name (map (toBasicName . name . snd) pc.args)
-          (a :: aps) => pure $ foldl (\acc,x => `(~acc <*> ~x)) `(~rc <$> ~a) aps)
+        pure $ foldl (\acc,x => `(~acc <*> ~x)) `(~rc <$> ~a) aps
 
 mkTraversableImpl : FParamTypeInfo -> TTImp
 mkTraversableImpl fp = `(MkTraversable (\f,z => ~(genTraverseTT fp )))
