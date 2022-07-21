@@ -1,8 +1,5 @@
 # Deriving Blessed Interfaces via Idris 2 Elaborator Reflection
 
-NB: Package won't work for you until upstream changes/decisions are made for elab-util.
-Though you can try https://github.com/MarcelineVQ/idris2-elab-util/tree/derive-elab yourself until then.
-
 Package provides deriving of Functor, Foldable, and Traversable.  
 It's intended to also provide the Bi-versions of each and possibly
 generalized newtype deriving if the underlying machinery provides enough.
