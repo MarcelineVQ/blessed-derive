@@ -7,7 +7,7 @@ import public Language.Reflection.Derive
 ||| multiples exist.
 export
 deriveBlessed : Name -> List (DeriveUtil -> Elab InterfaceImpl) -> Elab ()
-deriveBlessed name fs = do p <- getParamInfo' name -- using >>= here instead causes script failures?
+deriveBlessed name fs = do p <- getParamInfo' name
                            let g = genericUtil p
                            for_ fs $ \f => do
                              (MkInterfaceImpl iname vis opts impl type) <- f g
