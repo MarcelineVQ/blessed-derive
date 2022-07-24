@@ -11,11 +11,11 @@ import public Data.SortedMap.Dependent
 import public Language.Reflection.Derive
 
 --------------------------------------------------
--- Name Map and Fresh Varible Source
+-- Fresh Varible Source
 --------------------------------------------------
-
 namespace VarSrc
-    ||| Map of Strings to Stream Nat to provide endless, but per-string-sequential, variable names
+    ||| Map of Strings to Stream Nat to provide endless, but per-string-sequential
+    ||| variable names
     export
     VarSrc : Type
     VarSrc = SortedMap String (Stream Nat)
@@ -29,8 +29,8 @@ namespace VarSrc
     srcVarToName' (s,n) = UN . Basic $ (s ++ show n)
 
     export
-    empty : VarSrc
-    empty = SortedMap.empty
+    fresh : VarSrc
+    fresh = SortedMap.empty
 
     ||| evalState empty $ getNext' "b"                 === ("b",0)
     ||| evalState empty $ getNext' "b" *> getNext' "b" === ("b",1)
@@ -42,6 +42,17 @@ namespace VarSrc
               Nothing        => do put (insert s (tail nats) vm); pure (s,0)
               Just (v :: vs) => do put (insert s vs          vm); pure (s,v)
 
+    export
+    getNextAsName : MonadState VarSrc m => String -> m Name
+    getNextAsName s = srcVarToName <$> getNext s
+
+    export
+    getNextAsName' : MonadState VarSrc m => String -> m Name
+    getNextAsName' s = srcVarToName' <$> getNext s
+
+--------------------------------------------------
+-- Name indexed map
+--------------------------------------------------
 namespace NameMap
     ||| Track name and some associated data
     export
