@@ -20,20 +20,33 @@ namespace VarSrc
     VarSrc : Type
     VarSrc = SortedMap String (Stream Nat)
 
+    ||| srcVarTo_Name <$> getNext "b" === "b"
     export
     srcVarToName : (String,Nat) -> Name
     srcVarToName (s,n) = UN . Basic $ (s ++ if n == 0 then "" else show n)
 
+    ||| srcVarTo_Name' <$> getNext "b" === "b0"
     export
     srcVarToName' : (String,Nat) -> Name
     srcVarToName' (s,n) = UN . Basic $ (s ++ show n)
 
+    ||| srcVarTo_Name <$> getNext "b" === "b"
+    export
+    srcVarTo_Name : (String,Nat) -> Name
+    srcVarTo_Name (s,n) = UN . Basic $ "\{s}\{if n == 0 then "" else "_" ++ show n}"
+
+    ||| srcVarTo_Name' <$> getNext "b" === "b_0"
+    export
+    srcVarTo_Name' : (String,Nat) -> Name
+    srcVarTo_Name' (s,n) = UN . Basic $ "\{s}_\{show n}"
+
+    ||| A fresh variable source
     export
     fresh : VarSrc
     fresh = SortedMap.empty
 
-    ||| evalState empty $ getNext' "b"                 === ("b",0)
-    ||| evalState empty $ getNext' "b" *> getNext' "b" === ("b",1)
+    ||| evalState fresh $ getNext "b"                === ("b",0)
+    ||| evalState fresh $ getNext "b" *> getNext "b" === ("b",1)
     export
     getNext : MonadState VarSrc m => String -> m (String,Nat)
     getNext s = do
@@ -76,18 +89,23 @@ namespace NameMap
     empty = SortedMap.empty
 
 export
-replaceNames : NameMap Name -> TTImp -> TTImp
-replaceNames m (IVar fc nm) = IVar fc $ fromMaybe nm (lookup nm m)
-replaceNames m (IPi fc rig pinfo mnm argTy retTy)
-  = IPi fc rig pinfo (mnm >>= (`lookup`m)) (replaceNames m argTy) (replaceNames m retTy)
-replaceNames m (IApp fc s t) = IApp fc (replaceNames m s) (replaceNames m t)
-replaceNames m tt = tt
+replaceNames' : (Name -> Maybe Name) -> TTImp -> TTImp
+replaceNames' f tt = mapTTImp go tt
+  where -- <|> is so that the original value can be used if there's no lookup result
+    go : TTImp -> TTImp
+    go (IVar fc nm) = IVar fc (fromMaybe nm (f nm))
+    go (IPi fc rig pinfo mnm argTy retTy) = IPi fc rig pinfo ((mnm >>= f) <|> mnm) argTy retTy
+    go (ILam fc rig pinfo mnm argTy lamTy) = ILam fc rig pinfo ((mnm >>= f) <|> mnm) argTy lamTy
+    go (ILet fc lhsFC rig nm nTy nVal scope) = ILet fc lhsFC rig (fromMaybe nm (f nm)) nTy nVal scope
+    go (IAs fc nameFC side nm s) = IAs fc nameFC side (fromMaybe nm (f nm)) s
+    go (IQuoteName fc nm) = IQuoteName fc (fromMaybe nm (f nm))
+    go (IWithUnambigNames fc xs s) = IWithUnambigNames fc (mapSnd (\n => fromMaybe n (f n)) <$> xs) s
+    go tt' = tt'
 
 export
-fetchNext : MonadState (Stream a) m => m a
-fetchNext = do (x :: xs) <- get
-               () <- put xs
-               pure x
+replaceNames : NameMap Name -> TTImp -> TTImp
+replaceNames m = replaceNames' (`lookup`m)
+
 
 export
 ||| Name variables of a type, preferring [a-e] for simple parameters, [f-h] for

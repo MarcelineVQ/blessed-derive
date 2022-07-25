@@ -111,9 +111,6 @@ oneHoleFail s dtName = nHoleFail 1 s dtName
 expandLhs : Vect cc FParamCon -> Vect cc TTImp
 expandLhs = map (\pc => appNames pc.name (map (toBasicName . name . snd) pc.args))
 
-fetchFreshVar : MonadState (Stream Nat) m => String -> m Name
-fetchFreshVar s = pure $ UN (Basic $ s ++ show !fetchNext)
-
 -- TODO: revisit use of believe_me if it's causing issues with type resolution or repl evaluation
 ||| Bring together generated lhs/rhs patterns.
 ||| Handle cases of empty types or phantom types.

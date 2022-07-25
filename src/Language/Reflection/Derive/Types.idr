@@ -5,6 +5,8 @@ import Util
 import Data.Vect
 import Language.Reflection.Derive
 
+-- TODO, there's nocompelling reason so far to have Tuples in the triple form we have here. Vect or list would be fine
+
 --------------------------------------------------
 -- Helper Types
 --------------------------------------------------
@@ -193,22 +195,21 @@ makeFParamTypeInfo g = do
     splitLastVar tt = (tt,tt)
 
 public export
-data TagTree'
-  = SkipT' -- field to be left alone, either being placed back in as-is (map) or skipped (foldMap)
-  | TargetT' Nat -- field is our target type and position, typically we apply some `f` to it
-  | AppT' TagTree' TagTree' -- field involves application of `f` nested in map/foldMap/traverse
-  | TupleT' (TagTree',TagTree',List TagTree') -- fields of a tuple
-  | FunctionT' Polarity TagTree' TagTree' -- field is of a function type where polarity of arguments is tracked
-
+data TagTree' : Type where
+  SkipT' : TagTree' -- field to be left alone, either being placed back in as-is (map) or skipped (foldMap)
+  TargetT' : Nat -> TagTree' -- field is our target type and position, typically we apply some `f` to it
+  AppT' : (arity : Nat) -> TagTree' -> TagTree' -> TagTree' -- field involves application of `f` nested in map/foldMap/traverse
+  TupleT' : (TagTree',TagTree',List TagTree') -> TagTree' -- fields of a tuple
+  FunctionT' : Polarity -> TagTree' ->  TagTree' -> TagTree'-- field is of a function type where polarity of arguments is tracked
 
 -- not all that useful, mostly just obscures the intent
 public export
-foldTagTree' : b -> (Nat -> b) -> (TagTree' -> TagTree' -> b)
+foldTagTree' : b -> (Nat -> b) -> (Nat -> TagTree' -> TagTree' -> b)
           -> (TagTree' -> TagTree' -> List TagTree' -> b)
           -> (Polarity -> TagTree' -> TagTree' -> b) -> TagTree' -> b
 foldTagTree' skip target app tup func SkipT' = skip
 foldTagTree' skip target app tup func (TargetT' k) = target k
-foldTagTree' skip target app tup func (AppT' x y) = app x y
+foldTagTree' skip target app tup func (AppT' n x y) = app n x y
 foldTagTree' skip target app tup func (TupleT' (x,y,zs)) = tup x y zs
 foldTagTree' skip target app tup func (FunctionT' p x y) = func p x y
 
@@ -222,7 +223,7 @@ mutual
   hasNegTargetTT' : TagTree' -> Bool
   hasNegTargetTT' SkipT' = False
   hasNegTargetTT' (TargetT' _) = False
-  hasNegTargetTT' (AppT' x y) = hasNegTargetTT' x || hasNegTargetTT' y
+  hasNegTargetTT' (AppT' _ x y) = hasNegTargetTT' x || hasNegTargetTT' y
   hasNegTargetTT' (TupleT' (x,y,zs)) = any hasNegTargetTT' (x :: y :: zs)
   hasNegTargetTT' (FunctionT' Norm l r) = NegTarget'.hasTarget l || hasNegTargetTT' r
   hasNegTargetTT' (FunctionT' Flip l r) = NegTarget'.hasTarget r || hasNegTargetTT' l
@@ -230,7 +231,7 @@ mutual
   namespace NegTarget'
     export
     hasTarget : TagTree' -> Bool
-    hasTarget = foldTagTree' False (\_ => True) (\x,y => NegTarget'.hasTarget x || NegTarget'.hasTarget y)
+    hasTarget = foldTagTree' False (\_ => True) (\n,x,y => NegTarget'.hasTarget x || NegTarget'.hasTarget y)
       (\x,y,zs => any NegTarget'.hasTarget (x :: y :: zs)) (\p,l,r => hasNegTargetTT' (FunctionT' p l r))
 
 public export
@@ -264,7 +265,9 @@ ttToTagTree' t pi@(IPi fc rig pinfo mnm argTy retTy) = mkpi Norm pi
     mkpi p tt = ttToTagTree' t tt
 ttToTagTree' t a@(IApp _ l r) = case unPair a of
     (x :: y :: zs) => TupleT' (ttToTagTree' t x, ttToTagTree' t y, ttToTagTree' t <$> zs)
-    _              => AppT' (ttToTagTree' t l) (ttToTagTree' t r)
+    _              => case ttToTagTree' t l of
+                        l'@(AppT' d _ _) => AppT' (S d) l' (ttToTagTree' t r)
+                        l' => AppT' 1 l' (ttToTagTree' t r)
   where
     unPair : TTImp -> List TTImp -- TODO: can %pair pragma affect this?
     unPair (IApp _ `(Builtin.Pair ~l) r) = l :: unPair r; unPair tt = [tt]
@@ -274,13 +277,13 @@ public export
 data TagTree'' : Type where
   SkipT'' : TagTree'' -- field to be left alone, either being placed back in as-is (map) or skipped (foldMap)
   TargetT'' : Nat -> TagTree'' -- field is our target type and position, typically we apply some `f` to it
-  AppT'' : (depth,width : Nat) -> TagTree'' -> TagTree'' -> TagTree'' -- field involves application of `f` nested in map/foldMap/traverse
+  AppT'' : (arity : Nat) -> TagTree'' -> TagTree'' -> TagTree'' -- field involves application of `f` nested in map/foldMap/traverse
   TupleT'' : (TagTree'',TagTree'',List TagTree'') -> TagTree'' -- fields of a tuple
   FunctionT'' : Polarity -> TagTree'' ->  TagTree'' -> TagTree''-- field is of a function type where polarity of arguments is tracked
 
 
--- TODO seems like it'd be useful to have app track depth and width
 ||| Compute a TagTree, from a type TTImp, tracking nestings of pi argument polarity
+||| and count the number of times an App is done, iow its arity
 export
 ttToTagTree'' : (targetType : List (Name,Nat)) -> (typeSig : TTImp) -> TagTree''
 ttToTagTree'' t v@(IVar fc nm) = maybe SkipT'' TargetT'' (lookup nm t)
@@ -291,25 +294,13 @@ ttToTagTree'' t pi@(IPi fc rig pinfo mnm argTy retTy) = mkpi Norm pi
     mkpi p tt = ttToTagTree'' t tt
 ttToTagTree'' t a@(IApp _ l r) = case unPair a of
     (x :: y :: zs) => TupleT'' (ttToTagTree'' t x, ttToTagTree'' t y, ttToTagTree'' t <$> zs)
-    _              => AppT'' 0 0 (ttToTagTree'' t l) (ttToTagTree'' t r)
+    _              => case ttToTagTree'' t l of
+                        l'@(AppT'' d _ _) => AppT'' (S d) l' (ttToTagTree'' t r)
+                        l' => AppT'' 1 l' (ttToTagTree'' t r)
   where
     unPair : TTImp -> List TTImp -- TODO: can %pair pragma affect this?
     unPair (IApp _ `(Builtin.Pair ~l) r) = l :: unPair r; unPair tt = [tt]
 ttToTagTree'' t _ = SkipT''
-
--- it may be that only width matters
--- in fact what do I mean by depth? isn't it the same?
-checkApps : TagTree'' -> TagTree''
-checkApps SkipT'' = SkipT''
-checkApps (TargetT'' k) = (TargetT'' k)
-checkApps (AppT'' depth width x y) = case (checkApps x, checkApps y) of
-  (AppT'' depth' width' _ _,_) => ?sd1fdsdff
-  (_,AppT'' depth' width' _ _) => ?sdfdsdsdfsff
-  (l,r) => AppT'' depth width l r
-checkApps (TupleT'' x) = (TupleT'' x)
-checkApps (FunctionT'' x y z) = (FunctionT'' x y z)
-
-
 
 export
 isSkipT' : TagTree' -> Bool
@@ -323,9 +314,9 @@ export
 pruneSkipped' : TagTree' -> TagTree'
 pruneSkipped' SkipT' = SkipT'
 pruneSkipped' (TargetT' k) = TargetT' k
-pruneSkipped' (AppT' x y) = case (pruneSkipped' x, pruneSkipped' y) of
+pruneSkipped' (AppT' n x y) = case (pruneSkipped' x, pruneSkipped' y) of
     (SkipT',SkipT') => SkipT'
-    (l,r)         => AppT' l r
+    (l,r)         => AppT' n l r
 pruneSkipped' (TupleT' (x,y,zs)) =
     let (x',y',zs') = (pruneSkipped' x,pruneSkipped' y, map pruneSkipped' zs)
     in  case (x',y', all isSkipT' zs') of
@@ -373,7 +364,7 @@ export
 hasTarget' : TagTree' -> Bool
 hasTarget' SkipT' = False
 hasTarget' (TargetT' _) = True
-hasTarget' (AppT' x y) = hasTarget' x || hasTarget' y
+hasTarget' (AppT' _ x y) = hasTarget' x || hasTarget' y
 hasTarget' (TupleT' (x,y,zs)) = any hasTarget' (x :: y :: zs)
 hasTarget' (FunctionT' p x y) = hasTarget' x || hasTarget' y
 
@@ -386,7 +377,7 @@ export -- testing only
 Show TagTree' where
   show SkipT' = "SkipT"
   show (TargetT' n) = "TargetT \{show n}"
-  show (AppT' x y) = "AppT (" ++ show x ++ ") (" ++ show y ++ ")"
+  show (AppT' n x y) = "AppT \{show n} (" ++ show x ++ ") (" ++ show y ++ ")"
   show (TupleT' (x,y,zs)) = "TupleT (" ++ show x ++ ", " ++ show y ++ ", " ++ concatMap (assert_total show) zs ++ ")"
   show (FunctionT' p x y) = "FunctionT (" ++ show x ++ ") (" ++ show y ++ ")"
 
