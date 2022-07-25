@@ -1,5 +1,7 @@
 module Language.Reflection.Derive.Bifunctor
 
+import Language.Reflection.Derive.Functor
+
 import public Util
 
 import public Language.Reflection.Maps
@@ -37,7 +39,7 @@ argTypesWithParamsAndApps : Nat -> (targets : List (Name,Nat)) -> (params : List
 argTypesWithParamsAndApps n l ss =
     let q  = filter (hasTarget' . ttToTagTree' l) ss -- filter params that use our targets
         q' = filter ((>= n) . List.length . snd . unApp) q
-    in map (iterf n stripLAp) q'
+    in map (iterfN n stripLAp) q'
   where
     stripLAp : TTImp -> TTImp
     stripLAp (IApp fc s u) = s
@@ -50,13 +52,7 @@ toBasicName = UN . Basic . nameStr
 toBasicName' : Name -> TTImp
 toBasicName' = var . toBasicName
 
-export
-isIVar : TTImp -> Bool
-isIVar (IVar _ _) = True
-isIVar _ = False
-
 -- TODO: rework this entirely to be clean like you did for tree tagging
-
 -- Cute but this isn't `nHole` this is just Bifunctor. What we need is to have a list of reqImpls tagged with their respective `n`'s
 ||| `reqImpls` is a list of required implementation names paired with their number of needed holes
 export
@@ -70,7 +66,7 @@ nHoleImplementationType iface reqs fp g =
                                     --  ++ map ((`app`fp.nHoleType) . var) reqs
         ty = piAllImplicit autoArgs (toList . map fst $ fp.params)
         cn = foldr (\(n,tt),acc => NameMap.insert n tt acc) NameMap.empty fp.params
-    in replaceNames (evalState fresh (nameParams fp.params)) ty
+    in replaceNames (runFresh (nameParams fp.params)) ty
     -- in ty
 
 export
@@ -82,7 +78,7 @@ twoHoleImplementationType l2name l1name fp g =
         autoArgs = piAllAuto appIface $ map (var l1name .$) l1Vars ++ map (var l2name .$) l2Vars
         ty = piAllImplicit autoArgs (toList . map fst $ fp.params)
         cn = foldr (\(n,tt),acc => NameMap.insert n tt acc) NameMap.empty fp.params
-    in replaceNames (evalState fresh (nameParams fp.params)) ty
+    in replaceNames (runFresh (nameParams fp.params)) ty
     -- in ty
 
 ------------------------------------------------------------
@@ -111,7 +107,7 @@ oneHoleFail s dtName = nHoleFail 1 s dtName
 
 ||| Peel out the names of fields of a constructor into a lhs pattern.
 expandLhs : Vect cc FParamCon' -> Vect cc TTImp
-expandLhs = map (\pc => appNames pc.name (map (toBasicName . name . snd) pc.args))
+expandLhs = map (\pc => appNames pc.name (map (name . snd) pc.args))
 
 -- TODO: revisit use of believe_me if it's causing issues with type resolution or repl evaluation
 ||| Bring together generated lhs/rhs patterns.
@@ -134,11 +130,11 @@ makeFImpl fp isFold lhs rhs =
     extractNames = mapMaybe (\case IVar _ nm => Just nm; _ => Nothing) . snd . unApp
 
     mkMap : List (Name,String) -> NameMap Name
-    mkMap xs = evalState fresh $ foldlM
+    mkMap xs = runFresh $ foldlM
       (\m,(n,v) => pure $ NameMap.insert n (srcVarTo_Name !(getNext v)) m) NameMap.empty xs
 
-genMapTT2 : BFParamTypeInfo 2 -> TTImp
-genMapTT2 fp = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
+genBimapTT : BFParamTypeInfo 2 -> TTImp
+genBimapTT fp = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
   where
     ||| Stateful so that we can create unique variable names as we go
     ttGenMap : MonadState VarSrc m => (tt : TagTree') -> (var : TTImp) -> m TTImp
@@ -147,18 +143,17 @@ genMapTT2 fp = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
     ttGenMap (AppT' 1 SkipT' r) x = do -- map case
         n <- getNextAsName' "y"
         pure `(map ~(lambdaArg n .=> !(ttGenMap r (var n))) ~x)
-    ttGenMap (AppT' n l r) x =  do
+    ttGenMap (AppT' n l r) x = do
         n <- getNextAsName' "y"
-        -- This case is to strip off the root name in biapplication
-        -- e.g: in `(g (h a)) b` (AppT' 1 _ l')'s `_` is the `g`
-        -- it's neccesary so that the map case above can fire correctly
-        let l' = case l of AppT' 1 _ l' => l'; _ => l
+        -- Strip off an app and get the last two params at once
+        -- e.g: in `g a b c d` ~ `(((g a) b) c) d` this gets us bimap over c and d
+        let l' = case l of AppT' _ _ l' => l'; _ => l
         pure $ `(bimap ~(lambdaArg n .=> !(ttGenMap l' (var n))) ~(lambdaArg n .=> !(ttGenMap r (var n))) ~x)
-    ttGenMap (TupleT' (t1,t2,ts)) x = do
-        names <- map var <$> replicateA (2 + length ts) (srcVarToName' <$> getNext "t")
-        let lhs = Vect.foldr1 (\n,acc => `(MkPair ~n ~acc)) names
-            tts = zip (t1 :: t2 :: fromList ts) names
-        rhs <- Vect.foldr1 (\l,r => `(MkPair ~l ~r)) <$> traverse (uncurry ttGenMap) tts
+    ttGenMap (TupleT' {n} ts) x = do
+        names <- map var <$> replicateA (S (S n)) (srcVarToName' <$> getNext "t")
+        let lhs = foldr1 (\n,acc => `(MkPair ~n ~acc)) names
+            tts = zip ts names
+        rhs <- foldr1 (\l,r => `(MkPair ~l ~r)) <$> traverse (uncurry ttGenMap) tts
         pure `(case ~x of ~lhs => ~rhs)
     ttGenMap (FunctionT' _ l r) x = do
         n <- getNextAsName' "p"
@@ -166,11 +161,11 @@ genMapTT2 fp = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
 
     rhss : Vect cc FParamCon' -> Vect cc TTImp
     rhss = map (\pc => appAll pc.name (map (\(tag, arg) =>
-      evalState fresh $ ttGenMap tag (toBasicName' arg.name)) pc.args))
+      runFresh $ ttGenMap tag (var arg.name)) pc.args))
 
 
 mkBifunctorImpl : BFParamTypeInfo 2 -> TTImp
-mkBifunctorImpl fp = `(MkBifunctor (\f1,f2,implArg => ~(genMapTT2 fp)) (\f1 => bimap f1 id) (\f2 => bimap id f2))
+mkBifunctorImpl fp = `(MkBifunctor (\f1,f2,implArg => ~(genBimapTT fp)) (\f1 => bimap f1 id) (\f2 => bimap id f2))
 
 ||| Derives a `Functor` implementation for the given data type
 ||| and visibility.
@@ -183,55 +178,14 @@ BifunctorVis vis g = do
       | _ => fail (nHoleFail 2 iname dtName)
     let allFields = concatMap (map fst . args) fp.cons
     when (any hasNegTargetTT' allFields) $ fail (contraFail 2 iname dtName) -- reject contravariant uses of the hole type
-    -- logMsg "" 0 $ show $ concatMap (map fst . args) fp.cons
-    -- logTerm "" 0 "" $ makeFImpl' {t=List} fp False [`(MkFoo yar blar nar)] [`(f (\y1 => nar (y1 blar)) + 1)]
-    -- logTerm "" 0 "" $ makeFImpl fp False (expandLhs fp.cons) (expandLhs fp.cons)
-    -- logTerm "" 0 "" $ makeFImpl' fp False (expandLhs fp.cons) (expandLhs fp.cons)
     pure $ MkInterfaceImpl iname vis []
             (mkBifunctorImpl fp)
             (twoHoleImplementationType "Bifunctor" "Functor" fp g)
-
-export
-BifunctorVis' : Name -> Elab ()
-BifunctorVis' n = do
-    eff <- getParamInfo' n
-    let g = genericUtil eff
-    let iname = "Bifunctor"
-        dtName = nameStr $ g.typeInfo.name
-    Just fp <- pure $ makeBFParamTypeInfo 2 g
-      | _ => fail (nHoleFail 2 iname dtName)
-    let allFields = concatMap (map fst . args) fp.cons
-    when (any hasNegTargetTT' allFields) $ fail (contraFail 2 iname dtName) -- reject contravariant uses of the hole type
-    -- logMsg "" 0 $ show $ concatMap (map fst . args) fp.cons
-    -- logTerm "" 0 "" $ makeFImpl' {t=List} fp False [`(MkFoo yar blar nar)] [`(f (\y1 => nar (y1 blar)) + 1)]
-    -- logTerm "" 0 "" $ makeFImpl fp False (expandLhs fp.cons) (expandLhs fp.cons)
-    -- logTerm "" 0 "" $ makeFImpl' fp False (expandLhs fp.cons) (expandLhs fp.cons)
-    logTerm "" 0 "" $ mkBifunctorImpl fp
-    pure ()
 
 ||| Alias for `FunctorVis Public`.
 export
 Bifunctor : DeriveUtil -> Elab InterfaceImpl
 Bifunctor = BifunctorVis Public
-
-export
-data Travo : (Type -> Type -> Type) -> (Type -> Type -> Type) -> (Type -> Type -> Type) -> (Type -> Type) -> Type -> Type -> Type where
-  MkTravo1 : f (g Int a) b -> Travo r f g h a b
-  MkTravo1' : a -> h a -> g (h a) b -> Travo r f g h a b
-  MkTravo2 : b -> Travo r f g h a b
-  MkTravo2' : h b -> Travo r f g h a b
-  MkTravo3 : a -> g b a -> b -> Travo r f g h a b
-  MkTravo4 : h (h b) -> h b -> Travo r f g h a b
-  MkTravo4' : h b -> a -> h (h b) -> b -> h b -> Travo r f g h a b
-  MkTravo5 : g a b -> f a b -> r (f a b) (g a b) -> h b -> b -> Travo r f g h a b
-  MkTravo6 : r (f a b) (g a b) -> g a b -> f a b -> h a -> h b -> a -> b -> Travo r f g h a b
-  MkTravo7 : r (f a b) (g a b) -> g a b -> (f a b,g a b) -> h a -> h b -> a -> b -> Travo r f g h a b
-  MkTravo7' : r (f a b) (g (Int -> a) b) -> g a b -> (f a b,g a b) -> h a -> h b -> a -> b -> Travo r f g h a b
-  MkTravo8 : Int -> Travo r f g h a b
-  MkTravo9 : g (Int -> b) ((b -> Int) -> a) -> Travo r f g h a b
-%runElab deriveBlessed `{Travo} [Bifunctor]
-
--- %runElab BifunctorVis' `{Travo}
 
 {-
 -- Functor isn't defined to be a superclass of Bifunctor but I don't understand why, observe:
@@ -250,80 +204,135 @@ mapDefault : Bifunctor f => (a -> b) -> f e a -> f e b
 [EndoS] Semigroup (a -> a) where
   f <+> g = \x => f (g x)
 
-[Endo] Monoid (a -> a) using EndoS where
+[Endo] Monoid (a -> a) using Bifunctor.EndoS where
   neutral = id
 
-public export %inline
-defaultFoldr : Foldable t => (func : a -> b -> b) -> (init : b) -> (input : t a) -> b
-defaultFoldr f acc xs = foldMap @{%search} @{Endo} f xs acc
+-- interface Bifoldable p where
+--   constructor MkBifoldable
+--   bifoldr : (a -> acc -> acc) -> (b -> acc -> acc) -> acc -> p a b -> acc
 
-genFoldMapTT : FParamTypeInfo -> TTImp
-genFoldMapTT fp = makeFImpl fp True (expandLhs fp.cons) (rhss fp.cons)
+--   bifoldl : (acc -> a -> acc) -> (acc -> b -> acc) -> acc -> p a b -> acc
+--   bifoldl f g z t = bifoldr (flip (.) . flip f) (flip (.) . flip g) id t z
+
+--   binull : p a b -> Bool
+--   binull t = bifoldr {acc = Lazy Bool} (\ _,_ => False) (\ _,_ => False) True t
+
+defaultBifoldMap : Bifoldable p => Monoid m => (a -> m) -> (b -> m) -> p a b -> m
+defaultBifoldMap f g xs = bifoldr ((<+>) . f) ((<+>) . g) neutral xs
+
+genBifoldMapTT : BFParamTypeInfo 2 -> TTImp
+genBifoldMapTT fp = makeFImpl fp True (expandLhs fp.cons) (rhss fp.cons)
   where
     ||| Stateful so that we can create unique variable names as we go
-    ttGenFoldMap : MonadState VarSrc m => (tt : TagTree) -> (var : TTImp) -> m TTImp
-    ttGenFoldMap SkipT x = pure `(neutral)
-    ttGenFoldMap TargetT x = pure `(f ~x)
-    ttGenFoldMap (AppT l TargetT) x = pure `(foldMap f ~x)
-    ttGenFoldMap (AppT l r) x = do
-        n <- srcVarToName' <$> getNext "y"
-        pure $ `(foldMap ~(lambdaArg n .=> !(ttGenFoldMap r (var n))) ~x)
-    ttGenFoldMap (TupleT (t1,t2,ts)) x = do
-        names <- map var <$> replicateA (2 + length ts) (srcVarToName' <$> getNext "t")
-        let lhs = Vect.foldr1 (\n,acc => `(MkPair ~n ~acc)) names
-            tts = zip (t1 :: t2 :: fromList ts) names
-        rhs <- Vect.foldr1 (\acc,x => `(~acc <+> ~x)) <$> traverse (uncurry ttGenFoldMap) tts
+    ttGenBifoldMap : MonadState VarSrc m => (tt : TagTree') -> (var : TTImp) -> m TTImp
+    ttGenBifoldMap SkipT' x = pure `(acc)
+    ttGenBifoldMap (TargetT' t) x = pure $ case t of Z => `(f1 ~x acc); _ => `(f2 ~x acc)
+    ttGenBifoldMap (AppT' 1 SkipT' r) x = do -- foldMap case
+        n <- getNextAsName' "y"
+        pure `(Prelude.foldr ~(lambdaArg n .=> !(ttGenBifoldMap r (var n))) acc ~x)
+    ttGenBifoldMap (AppT' n l r) x = do
+        n <- getNextAsName' "y"
+        -- Strip off an app and get the last two params at once
+        -- e.g: in `g a b c d` ~ `(((g a) b) c) d` this gets us bimap over c and d
+        let l' = case l of AppT' _ _ l' => l'; _ => l
+        pure $ `(Prelude.bifoldr ~(lambdaArg n .=> !(ttGenBifoldMap l' (var n))) ~(lambdaArg n .=> !(ttGenBifoldMap r (var n))) acc ~x)
+    ttGenBifoldMap (TupleT' {n} ts) x = do
+        names <- map var <$> replicateA (S (S n)) (srcVarToName' <$> getNext "t")
+        let lhs = foldr1 (\n,acc => `(MkPair ~n ~acc)) names
+            tts = zip ts names
+        rhs <- foldl1 (\acc,x => `(~acc <+> ~x)) <$> traverse (uncurry ttGenBifoldMap) tts
         pure `(case ~x of ~lhs => ~rhs)
-    ttGenFoldMap (FunctionT _ l r) x = pure `(Foldable_Derive_Error_Report_This) -- can't actually happen
+    ttGenBifoldMap (FunctionT' _ l r) x = pure $ `(cantHappen)
+
+    -- ||| Stateful so that we can create unique variable names as we go
+    -- ttGenBifoldMap : MonadState VarSrc m => (tt : TagTree') -> (var : TTImp) -> m TTImp
+    -- ttGenBifoldMap SkipT' x = pure `(neutral)
+    -- ttGenBifoldMap (TargetT' t) x = pure `(f ~x)
+    -- ttGenBifoldMap (AppT l TargetT) x = pure `(foldMap f ~x)
+    -- ttGenBifoldMap (AppT l r) x = do
+    --     n <- srcVarToName' <$> getNext "y"
+    --     pure $ `(foldMap ~(lambdaArg n .=> !(ttGenBifoldMap r (var n))) ~x)
+    -- ttGenBifoldMap (TupleT (t1,t2,ts)) x = do
+    --     names <- map var <$> replicateA (2 + length ts) (srcVarToName' <$> getNext "t")
+    --     let lhs = Vect.foldr1 (\n,acc => `(MkPair ~n ~acc)) names
+    --         tts = zip (t1 :: t2 :: fromList ts) names
+    --     rhs <- Vect.foldr1 (\acc,x => `(~acc <+> ~x)) <$> traverse (uncurry ttGenBifoldMap) tts
+    --     pure `(case ~x of ~lhs => ~rhs)
+    -- ttGenBifoldMap (FunctionT _ l r) x = pure `(Foldable_Derive_Error_Report_This) -- can't actually happen
 
     -- filter SkipF's entirely to avoid <+> on extraneous neutral's
-    rhss : Vect cc FParamCon -> Vect cc TTImp
-    rhss = map (\pc => case filter (not . isSkipT . fst) pc.args of
+    rhss : Vect cc FParamCon' -> Vect cc TTImp
+    rhss = map (\pc => case filter (not . isSkipT' . fst) pc.args of
         [] => `(neutral) -- foldl1 instead of foldl to avoid extra <+> on neutral
         cs@(_ :: _) => foldl1 (\acc,x => `(~acc <+> ~x))
-          (map (\(tag, arg) => evalState fresh $ ttGenFoldMap tag (toBasicName' arg.name)) cs))
+          (map (\(tag, arg) => runFresh $ ttGenBifoldMap tag (var arg.name)) cs))
 
--- e.g :
-public export
-getBaseImplementation' : (x : Type) -> Elab x
-getBaseImplementation' implTy = do
-  tpe <- quote implTy
-  let d = `( let x = %search in the ~tpe x )
-  z <- check {expected=implTy} d
-  pure z
+bifoldr' : Bifunctor p => (a -> acc -> acc) -> (b -> acc -> acc) -> acc -> p a b -> acc
+bifoldr' f g acc xs =
+  let bifoldMap : Monoid m => (a -> m) -> (b -> m) -> p a b -> m
+      bifoldMap = ?genBifoldMapTT'
+  in  bifoldMap @{Endo} f g xs acc
 
--- Copied from base but this should actually quote a known Foldable somehow,
--- like above, and edit it via field-name to keep up-to-date automatically.
-mkFoldableImpl : FParamTypeInfo -> TTImp
-mkFoldableImpl fp = `(MkFoldable 
-                     defaultFoldr
-                     (\f,implArg,t => foldr (flip (.) . flip f) id t implArg)
-                     (\xs => foldr {acc = Lazy Bool} (\ _,_ => False) True xs)
-                     (\fm,a0 => foldl (\ma, b => ma >>= flip fm b) (pure a0))
-                     (foldr (::) [])
-                     (\f,implArg => ~(genFoldMapTT fp))
+mkFoldableImpl : BFParamTypeInfo 2 -> TTImp
+mkFoldableImpl fp = `(MkBifoldable
+                    --  (\f1,f2,acc,implArg => ~(genBifoldMapTT fp))
+                     (\f1,f2,acc,implArg => ?sdfsdffsd)
+                     (\f,g,z,t => bifoldr (flip (.) . flip f) (flip (.) . flip g) id t z)
+                     (\t => bifoldr {acc = Lazy Bool} (\ _,_ => False) (\ _,_ => False) True t)
                      )
-
+  -- where
+    -- bifoldMap : Bifoldable p => Monoid m => (a -> m) -> (b -> m) -> p a b -> m
+    -- bifoldMap = \f1,f2,implArg => ~(genBifoldMapTT fp)
+  -- (\f1',f2',acc,implArg' =>
+                      --  let bifoldMap : Bifoldable p => Monoid m => (a -> m) -> (b -> m) -> p a b -> m
+                          --  bifoldMap = \f1,f2,implArg => ~(genBifoldMapTT fp)
+                      --  in  bifoldMap @{%search} @{Endo} f1' f2' implArg' acc)
+-- 
 ||| Derives a `Foldable` implementation for the given data type
 ||| and visibility.
 export
-FoldableVis : Visibility -> DeriveUtil -> Elab InterfaceImpl
-FoldableVis vis g = do
-    let iname = "Foldable"
+BifoldableVis : Visibility -> DeriveUtil -> Elab InterfaceImpl
+BifoldableVis vis g = do
+    let iname = "Bifoldable"
         dtName = nameStr $ g.typeInfo.name
-    Just fp <- pure $ makeFParamTypeInfo g
-      | _ => fail (oneHoleFail iname dtName)
+    Just fp <- pure $ makeBFParamTypeInfo 2 g
+      | _ => fail (nHoleFail 2 iname dtName)
     let allFields = concatMap (map fst . args) fp.cons
-    when (any hasFunctionT allFields) $ fail (piFail iname dtName) -- reject uses of the hole type in functions
+    when (any hasFunctionT' allFields) $ fail (piFail 2 iname dtName) -- reject uses of the hole type in functions
     pure $ MkInterfaceImpl iname vis []
              (mkFoldableImpl fp)
-             (oneHoleImplementationType `(Foldable) [] fp g)
+             (twoHoleImplementationType "Bifoldable" "Foldable" fp g)
 
 ||| Alias for `FoldableVis Public`.
 export
-Foldable : DeriveUtil -> Elab InterfaceImpl
-Foldable = FoldableVis Public
+Bifoldable : DeriveUtil -> Elab InterfaceImpl
+Bifoldable = BifoldableVis Public
 
+export
+data Travo : (Type -> Type -> Type) -> (Type -> Type -> Type) -> (Type -> Type -> Type) -> (Type -> Type) -> Type -> Type -> Type where
+  -- MkTravo1 : f (g Int a) b -> Travo r f g h a b
+  -- MkTravo1' : a -> h a -> g (h a) b -> Travo r f g h a b
+  MkTravo2 : b -> Travo r f g h a b
+  MkTravo2' : h b -> Travo r f g h a b
+  -- MkTravo3 : a -> g b a -> b -> Travo r f g h a b
+  -- MkTravo4 : h (h b) -> h b -> Travo r f g h a b
+  -- MkTravo4' : h b -> a -> h (h b) -> b -> h b -> Travo r f g h a b
+  -- MkTravo5 : g a b -> f a b -> r (f a b) (g a b) -> h b -> b -> Travo r f g h a b
+  -- MkTravo6 : r (f a b) (g a b) -> g a b -> f a b -> h a -> h b -> a -> b -> Travo r f g h a b
+  -- MkTravo7 : r (f a b) (g a b) -> g a b -> (f a b,g a b) -> h a -> h b -> a -> b -> Travo r f g h a b
+  -- -- MkTravo7' : r (f a b) (g (Int -> a) b) -> g a b -> (f a b,g a b) -> h a -> h b -> a -> b -> Travo r f g h a b
+  -- MkTravo8 : Int -> Travo r f g h a b
+  -- -- MkTravo9 : g (Int -> b) ((b -> Int) -> a) -> Travo r f g h a b
+  -- MkTravo7'' : Travo r f g h a b -> Travo r f g h a b
+-- %runElab deriveBlessed `{Travo} [Bifunctor,Bifoldable]
+%runElab deriveBlessed `{Travo} [Bifoldable]
+
+-- Bifoldable (Travo r f g h) where
+  -- bifoldr f g acc (MkTravo2 b) = (g b) acc
+
+-- %runElab BifunctorVis' `{Travo}
+
+{-
 genTraverseTT : FParamTypeInfo -> TTImp
 genTraverseTT fp = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
   where
@@ -360,7 +369,7 @@ genTraverseTT fp = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
 
     export
     rhss : Vect cc FParamCon -> Vect cc TTImp
-    rhss = map $ \pc => evalState fresh $ do
+    rhss = map $ \pc => runFresh $ do
         (a :: aps) <- traverse (\(tag, arg) =>
           ttGenTraverse tag (toBasicName' arg.name)) (filter (not . isSkipT . fst) pc.args)
                   -- reapply lhs under pure if all vars are SkipT

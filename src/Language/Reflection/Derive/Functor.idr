@@ -79,7 +79,7 @@ oneHoleImplementationType iface reqs fp g =
         autoArgs = piAllAuto appIface $ map (iface .$) functorVars ++ map (\n => app (var n) fp.oneHoleType) reqs
         ty = piAllImplicit autoArgs (toList . map fst $ init fp.params)
         cn = foldr (\(n,tt),acc => NameMap.insert n tt acc) NameMap.empty fp.params
-    in replaceNames (evalState fresh (nameParams fp.params)) ty
+    in replaceNames (runFresh (nameParams fp.params)) ty
     -- in ty
 
 ------------------------------------------------------------
@@ -118,7 +118,7 @@ expandLhs = map (\pc => appNames pc.name (map (toBasicName . name . snd) pc.args
 makeFImpl : Foldable t => Zippable t => FParamTypeInfo -> (isFoldable: Bool) -> t TTImp -> t TTImp -> TTImp
 makeFImpl fp isFold lhs rhs =
   case (isPhantom fp, null fp.cons, isFold) of
-    (_   ,True,_    ) => iCase (var "z") implicitFalse $ [impossibleClause `(_)  ] -- No cons, impossible to proceed
+    (_   ,True,_    ) => iCase (var "z") implicitFalse $ [impossibleClause `(_)] -- No cons, impossible to proceed
     (True,_   ,False) => `(believe_me z) -- Var is phantom and not for Foldable, safely change type
     _                 => iCase (var "z") implicitFalse $ toList $ zipWith (.=) lhs rhs
 
@@ -144,7 +144,7 @@ genMapTT fp = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
         pure $ lambdaArg n .=> !(ttGenMap r (x .$ !(ttGenMap l (var n))))
 
     rhss : Vect cc FParamCon -> Vect cc TTImp
-    rhss = map (\pc => appAll pc.name (map (\(tag, arg) => evalState fresh $ ttGenMap tag (toBasicName' arg.name)) pc.args))
+    rhss = map (\pc => appAll pc.name (map (\(tag, arg) => runFresh $ ttGenMap tag (toBasicName' arg.name)) pc.args))
 
 
 mkFunctorImpl : FParamTypeInfo -> TTImp
@@ -196,7 +196,7 @@ genFoldMapTT fp = makeFImpl fp True (expandLhs fp.cons) (rhss fp.cons)
         names <- map var <$> replicateA (2 + length ts) (getNextAsName' "t")
         let lhs = Vect.foldr1 (\n,acc => `(MkPair ~n ~acc)) names
             tts = zip (t1 :: t2 :: fromList ts) names
-        rhs <- Vect.foldr1 (\acc,x => `(~acc <+> ~x)) <$> traverse (uncurry ttGenFoldMap) tts
+        rhs <- Vect.foldl1 (\acc,x => `(~acc <+> ~x)) <$> traverse (uncurry ttGenFoldMap) tts
         pure `(case ~x of ~lhs => ~rhs)
     ttGenFoldMap (FunctionT _ l r) x = pure `(Foldable_Derive_Error_Report_This) -- can't actually happen
 
@@ -205,7 +205,7 @@ genFoldMapTT fp = makeFImpl fp True (expandLhs fp.cons) (rhss fp.cons)
     rhss = map (\pc => case filter (not . isSkipT . fst) pc.args of
         [] => `(neutral) -- foldl1 instead of foldl to avoid extra <+> on neutral
         cs@(_ :: _) => foldl1 (\acc,x => `(~acc <+> ~x))
-          (map (\(tag, arg) => evalState fresh $ ttGenFoldMap tag (toBasicName' arg.name)) cs))
+          (map (\(tag, arg) => runFresh $ ttGenFoldMap tag (toBasicName' arg.name)) cs))
 
 -- e.g :
 public export
@@ -284,7 +284,7 @@ genTraverseTT fp = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
 
     export
     rhss : Vect cc FParamCon -> Vect cc TTImp
-    rhss = map $ \pc => evalState fresh $ do
+    rhss = map $ \pc => runFresh $ do
         (a :: aps) <- traverse (\(tag, arg) =>
           ttGenTraverse tag (toBasicName' arg.name)) (filter (not . isSkipT . fst) pc.args)
                   -- reapply lhs under pure if all vars are SkipT

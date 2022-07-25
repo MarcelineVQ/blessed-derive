@@ -58,19 +58,38 @@ data Foo4 : Type -> Type -> Type where
   MkFoo4 : (0 notUsed : Int) -> (a,b) -> Foo2 a b
 ```
 Derivation would merely be the unwrapping and wrapping of your datatype to use the implementation already defined for the contained field. For example we simply call to the Num instance of Int for Foo1. This is straightforward to write for a given instance like `Num`, the hurdle with `generalized` newtype deriving is generating for any possible given interface.
+```
 
-I'd also like to include some other derivations that I think are cute. Such as `is`:
+## Fun
+For fun this lib includes deriving called `Is` for checking what data constructor we have.
 ```idris
-data Faf = Faf1 | Faf2 | Faf3 |Faf4
-%runelab deriveIs "Faf"
+import Language.Reflection.Is
 
--- deriveIs would cause the following to come into scope:
-isFaf1 : Faf -> Bool
-isFaf1 Faf1 = True; isFaf1 _ = False
+import public Language.Reflection.Derive
+%language ElabReflection
 
-isFaf2 : Faf -> Bool
-isFaf2 Faf2 = True; isFaf2 _ = False
-...etc
+public export
+data Foo : Type -> (Type -> Type) -> Type -> Type where
+  MkFoo1 : a -> Foo a f b
+  MkFoo2 : b -> Foo a f b
+  MkFoo3 : Foo a f b
+  MkFoo6 : f a -> Foo a f b
+  MkFoo0 : f (f b) -> Foo a f b
+
+%runElab deriveIs "Foo" Public
+{-
+Which would allow the following:
+> isMkFoo1 MkFoo3
+> False
+
+> isMkFoo3 $ MkFoo2 'c'
+> True
+
+This is fairly easily done in current Idris via:
+> (\case MkFoo1 _ => True; _ => False) $ MkFoo1 'c'
+> True
+But Is could be beneficial to save some writing, and is kinda fun!
+-}
 ```
 
 ## Related Libraries

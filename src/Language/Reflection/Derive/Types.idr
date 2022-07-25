@@ -5,8 +5,6 @@ import Util
 import Data.Vect
 import Language.Reflection.Derive
 
--- TODO, there's nocompelling reason so far to have Tuples in the triple form we have here. Vect or list would be fine
-
 --------------------------------------------------
 -- Helper Types
 --------------------------------------------------
@@ -199,18 +197,18 @@ data TagTree' : Type where
   SkipT' : TagTree' -- field to be left alone, either being placed back in as-is (map) or skipped (foldMap)
   TargetT' : Nat -> TagTree' -- field is our target type and position, typically we apply some `f` to it
   AppT' : (arity : Nat) -> TagTree' -> TagTree' -> TagTree' -- field involves application of `f` nested in map/foldMap/traverse
-  TupleT' : (TagTree',TagTree',List TagTree') -> TagTree' -- fields of a tuple
+  TupleT' : {n:_} -> Vect (S (S n)) TagTree' -> TagTree' -- fields of a tuple
   FunctionT' : Polarity -> TagTree' ->  TagTree' -> TagTree'-- field is of a function type where polarity of arguments is tracked
 
 -- not all that useful, mostly just obscures the intent
 public export
 foldTagTree' : b -> (Nat -> b) -> (Nat -> TagTree' -> TagTree' -> b)
-          -> (TagTree' -> TagTree' -> List TagTree' -> b)
+          -> (forall n. Vect (S (S n)) TagTree' -> b)
           -> (Polarity -> TagTree' -> TagTree' -> b) -> TagTree' -> b
 foldTagTree' skip target app tup func SkipT' = skip
 foldTagTree' skip target app tup func (TargetT' k) = target k
 foldTagTree' skip target app tup func (AppT' n x y) = app n x y
-foldTagTree' skip target app tup func (TupleT' (x,y,zs)) = tup x y zs
+foldTagTree' skip target app tup func (TupleT' xs) = tup xs
 foldTagTree' skip target app tup func (FunctionT' p x y) = func p x y
 
 mutual
@@ -224,7 +222,7 @@ mutual
   hasNegTargetTT' SkipT' = False
   hasNegTargetTT' (TargetT' _) = False
   hasNegTargetTT' (AppT' _ x y) = hasNegTargetTT' x || hasNegTargetTT' y
-  hasNegTargetTT' (TupleT' (x,y,zs)) = any hasNegTargetTT' (x :: y :: zs)
+  hasNegTargetTT' (TupleT' xs) = any hasNegTargetTT' xs
   hasNegTargetTT' (FunctionT' Norm l r) = NegTarget'.hasTarget l || hasNegTargetTT' r
   hasNegTargetTT' (FunctionT' Flip l r) = NegTarget'.hasTarget r || hasNegTargetTT' l
 
@@ -232,7 +230,7 @@ mutual
     export
     hasTarget : TagTree' -> Bool
     hasTarget = foldTagTree' False (\_ => True) (\n,x,y => NegTarget'.hasTarget x || NegTarget'.hasTarget y)
-      (\x,y,zs => any NegTarget'.hasTarget (x :: y :: zs)) (\p,l,r => hasNegTargetTT' (FunctionT' p l r))
+      (\xs => any NegTarget'.hasTarget xs) (\p,l,r => hasNegTargetTT' (FunctionT' p l r))
 
 public export
 record FParamCon'  where
@@ -263,14 +261,17 @@ ttToTagTree' t pi@(IPi fc rig pinfo mnm argTy retTy) = mkpi Norm pi
     mkpi : Polarity -> TTImp -> TagTree'
     mkpi p (IPi _ _ _ _ argTy retTy) = FunctionT' p (mkpi (neg p) argTy) (mkpi p retTy)
     mkpi p tt = ttToTagTree' t tt
-ttToTagTree' t a@(IApp _ l r) = case unPair a of
-    (x :: y :: zs) => TupleT' (ttToTagTree' t x, ttToTagTree' t y, ttToTagTree' t <$> zs)
+ttToTagTree' t a@(IApp _ l r) = case unPair' a of
+    -- (x :: y :: zs) => TupleT' (ttToTagTree' t x, ttToTagTree' t y, ttToTagTree' t <$> zs)
+    (S (S k) ** xs) => TupleT' (map (ttToTagTree' t) xs)
     _              => case ttToTagTree' t l of
                         l'@(AppT' d _ _) => AppT' (S d) l' (ttToTagTree' t r)
                         l' => AppT' 1 l' (ttToTagTree' t r)
   where
     unPair : TTImp -> List TTImp -- TODO: can %pair pragma affect this?
     unPair (IApp _ `(Builtin.Pair ~l) r) = l :: unPair r; unPair tt = [tt]
+    unPair' : TTImp -> (n ** Vect n TTImp) -- TODO: can %pair pragma affect this?
+    unPair' (IApp _ `(Builtin.Pair ~l) r) = let (k ** xs) = unPair' r in (S k ** l :: xs); unPair' tt = (1 ** [tt])
 ttToTagTree' t _ = SkipT'
 
 public export
@@ -278,7 +279,7 @@ data TagTree'' : Type where
   SkipT'' : TagTree'' -- field to be left alone, either being placed back in as-is (map) or skipped (foldMap)
   TargetT'' : Nat -> TagTree'' -- field is our target type and position, typically we apply some `f` to it
   AppT'' : (arity : Nat) -> TagTree'' -> TagTree'' -> TagTree'' -- field involves application of `f` nested in map/foldMap/traverse
-  TupleT'' : (TagTree'',TagTree'',List TagTree'') -> TagTree'' -- fields of a tuple
+  TupleT'' : Vect (S (S n)) TagTree'' -> TagTree'' -- fields of a tuple
   FunctionT'' : Polarity -> TagTree'' ->  TagTree'' -> TagTree''-- field is of a function type where polarity of arguments is tracked
 
 
@@ -292,14 +293,17 @@ ttToTagTree'' t pi@(IPi fc rig pinfo mnm argTy retTy) = mkpi Norm pi
     mkpi : Polarity -> TTImp -> TagTree''
     mkpi p (IPi _ _ _ _ argTy retTy) = FunctionT'' p (mkpi (neg p) argTy) (mkpi p retTy)
     mkpi p tt = ttToTagTree'' t tt
-ttToTagTree'' t a@(IApp _ l r) = case unPair a of
-    (x :: y :: zs) => TupleT'' (ttToTagTree'' t x, ttToTagTree'' t y, ttToTagTree'' t <$> zs)
+ttToTagTree'' t a@(IApp _ l r) = case unPair' a of
+    -- (x :: y :: zs) => TupleT'' (ttToTagTree'' t x, ttToTagTree'' t y, ttToTagTree'' t <$> zs)
+    (S (S k) ** xs) => TupleT'' (map (ttToTagTree'' t) xs)
     _              => case ttToTagTree'' t l of
                         l'@(AppT'' d _ _) => AppT'' (S d) l' (ttToTagTree'' t r)
                         l' => AppT'' 1 l' (ttToTagTree'' t r)
   where
     unPair : TTImp -> List TTImp -- TODO: can %pair pragma affect this?
     unPair (IApp _ `(Builtin.Pair ~l) r) = l :: unPair r; unPair tt = [tt]
+    unPair' : TTImp -> (n ** Vect n TTImp) -- TODO: can %pair pragma affect this?
+    unPair' (IApp _ `(Builtin.Pair ~l) r) = let (k ** xs) = unPair' r in (S k ** l :: xs); unPair' tt = (1 ** [tt])
 ttToTagTree'' t _ = SkipT''
 
 export
@@ -317,11 +321,11 @@ pruneSkipped' (TargetT' k) = TargetT' k
 pruneSkipped' (AppT' n x y) = case (pruneSkipped' x, pruneSkipped' y) of
     (SkipT',SkipT') => SkipT'
     (l,r)         => AppT' n l r
-pruneSkipped' (TupleT' (x,y,zs)) =
-    let (x',y',zs') = (pruneSkipped' x,pruneSkipped' y, map pruneSkipped' zs)
-    in  case (x',y', all isSkipT' zs') of
-          (SkipT',SkipT',True) => SkipT'
-          _                  => TupleT' (x',y',zs')
+pruneSkipped' (TupleT' xs) =
+    let xs' = map pruneSkipped' xs
+    in  case all isSkipT' xs' of
+          True => SkipT'
+          _    => TupleT' xs'
 pruneSkipped' (FunctionT' p x y) = case (pruneSkipped' x, pruneSkipped' y) of
     (SkipT',SkipT') => SkipT'
     (l,r)         => FunctionT' p l r
@@ -334,6 +338,7 @@ makeFParamCon' ts (MkParamCon name explicitArgs) =
   MkFParamCon' name $ map (\r => (pruneSkipped' $ ttToTagTree' (numberedList ts) r.tpe, r)) explicitArgs
 
 -- Failure implies its not a `Type -> ... -> Type` type
+-- TODO Renaming should be done here!
 export
 makeBFParamTypeInfo : (n : Nat) -> DeriveUtil -> Maybe (BFParamTypeInfo n)
 makeBFParamTypeInfo n g = do
@@ -365,8 +370,16 @@ hasTarget' : TagTree' -> Bool
 hasTarget' SkipT' = False
 hasTarget' (TargetT' _) = True
 hasTarget' (AppT' _ x y) = hasTarget' x || hasTarget' y
-hasTarget' (TupleT' (x,y,zs)) = any hasTarget' (x :: y :: zs)
+hasTarget' (TupleT' xs) = any hasTarget' xs
 hasTarget' (FunctionT' p x y) = hasTarget' x || hasTarget' y
+
+export
+hasFunctionT' : TagTree' -> Bool
+hasFunctionT' SkipT' = False
+hasFunctionT' (TargetT' k) = False
+hasFunctionT' (AppT' arity x y) = hasFunctionT' x || hasFunctionT' y
+hasFunctionT' (TupleT' xs) = any hasFunctionT' xs
+hasFunctionT' (FunctionT' _ x y) = hasTarget' x || hasTarget' y
 
 ||| Is our target parameter in the datatype itself but not any constructor fields
 export
@@ -378,6 +391,5 @@ Show TagTree' where
   show SkipT' = "SkipT"
   show (TargetT' n) = "TargetT \{show n}"
   show (AppT' n x y) = "AppT \{show n} (" ++ show x ++ ") (" ++ show y ++ ")"
-  show (TupleT' (x,y,zs)) = "TupleT (" ++ show x ++ ", " ++ show y ++ ", " ++ concatMap (assert_total show) zs ++ ")"
+  show (TupleT' xs) = "TupleT " ++ assert_total (show xs)
   show (FunctionT' p x y) = "FunctionT (" ++ show x ++ ") (" ++ show y ++ ")"
-

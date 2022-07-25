@@ -45,6 +45,10 @@ namespace VarSrc
     fresh : VarSrc
     fresh = SortedMap.empty
 
+    export
+    runFresh : (forall m. MonadState VarSrc m => m b) -> b
+    runFresh eff = evalState fresh eff
+
     ||| evalState fresh $ getNext "b"                === ("b",0)
     ||| evalState fresh $ getNext "b" *> getNext "b" === ("b",1)
     export

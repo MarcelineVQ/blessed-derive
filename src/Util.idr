@@ -4,6 +4,14 @@ import Data.Vect -- Vect.Nil
 
 import Data.List -- instance Zippable List
 
+import Language.Reflection.Is
+
+import public Language.Reflection.Derive
+%language ElabReflection
+
+-- isIVar, isIPi, etc.
+%runElab deriveIs "TTImp" Public
+
 --------------------------------------------------
 -- Utils
 --------------------------------------------------
@@ -29,6 +37,15 @@ numberedList : Range b => Num b => List a -> List (a,b)
 numberedList xs = zipWithStream (\x,y => (x,y)) xs [0..]
 
 export
-iterf : Nat -> (b -> b) -> b -> b
-iterf Z f = id
-iterf (S k) f = f . iterf k f
+iterfN : Nat -> (b -> b) -> b -> b
+iterfN Z f = id
+iterfN (S k) f = f . iterfN k f
+
+{-
+getBaseImplementation' : (x : Type) -> Elab x
+getBaseImplementation' implTy = do
+  tpe <- quote implTy
+  let d = `( let x = %search in the ~tpe x )
+  z <- check {expected=implTy} d
+  pure z
+-}
