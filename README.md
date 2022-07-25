@@ -81,7 +81,7 @@ Which would allow the following:
 > isMkFoo1 MkFoo3
 > False
 
-> isMkFoo3 $ MkFoo2 'c'
+> isMkFoo2 $ MkFoo2 'c'
 > True
 
 This is fairly easily done in current Idris via:
