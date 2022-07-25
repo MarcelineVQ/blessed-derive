@@ -58,7 +58,6 @@ data Foo4 : Type -> Type -> Type where
   MkFoo4 : (0 notUsed : Int) -> (a,b) -> Foo2 a b
 ```
 Derivation would merely be the unwrapping and wrapping of your datatype to use the implementation already defined for the contained field. For example we simply call to the Num instance of Int for Foo1. This is straightforward to write for a given instance like `Num`, the hurdle with `generalized` newtype deriving is generating for any possible given interface.
-```
 
 ## Fun
 For fun this lib includes deriving called `Is` for checking what data constructor we have.
