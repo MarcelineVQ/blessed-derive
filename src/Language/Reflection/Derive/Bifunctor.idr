@@ -32,30 +32,6 @@ overlapping instances if a user already wrote one and then derives.
 This doesn't derive indexed types yet, but there's no reason it can't be made to
 -}
 
-||| Turn any name into a Basic name
-toBasicName : Name -> Name
-toBasicName = UN . Basic . nameStr
-
-toBasicName' : Name -> TTImp
-toBasicName' = var . toBasicName
-
--- TODO: rework this entirely to be clean like you did for tree tagging
--- Cute but this isn't `nHole` this is just Bifunctor. What we need is to have a list of reqImpls tagged with their respective `n`'s
-||| `reqImpls` is a list of required implementation names paired with their number of needed holes
-export
-nHoleImplementationType : {n:_} -> (iface : TTImp) -> (reqImpls : List (Name,Nat)) -> BFParamTypeInfo n -> DeriveUtil -> TTImp
-nHoleImplementationType iface reqs fp g =
-    let appIface = iface .$ fp.nHoleType
-        bifunctorVars = filter isIVar . nub $ argTypesWithParamsAndApps n (numberedList (toList $ map fst fp.holeParams)) g.argTypesWithParams
-        functorVars = filter isIVar . nub $ argTypesWithParamsAndApps (n `minus` 1) (numberedList (toList $ map fst fp.holeParams)) g.argTypesWithParams
-        autoArgs = piAllAuto appIface $ map (var "Functor" .$) functorVars
-                                     ++ map (iface .$) bifunctorVars
-                                    --  ++ map ((`app`fp.nHoleType) . var) reqs
-        ty = piAllImplicit autoArgs (toList . map fst $ fp.params)
-        cn = foldr (\(n,tt),acc => NameMap.insert n tt acc) NameMap.empty fp.params
-    in replaceNames (runFresh (nameParams fp.params)) ty
-    -- in ty
-
 export
 twoHoleImplementationType : (l2name,l1name : Name) -> BFParamTypeInfo n -> DeriveUtil -> TTImp
 twoHoleImplementationType l2name l1name fp g =
@@ -66,61 +42,9 @@ twoHoleImplementationType l2name l1name fp g =
         l1Vars = nub $ argTypesWithParamsAndApps 1 (numberedList (toList $ map fst fp.holeParams)) g.argTypesWithParams
         autoArgs = piAllAuto appIface $ map (var l1name .$) l1Vars ++ map (var l2name .$) l2Vars
         ty = piAllImplicit autoArgs (toList . map fst $ fp.params)
-        cn = foldr (\(n,tt),acc => NameMap.insert n tt acc) NameMap.empty fp.params
     in replaceNames (runFresh (nameParams fp.params)) ty
-    -- in ty
 
 ------------------------------------------------------------
--- Failure reporting
-------------------------------------------------------------
-
-failDerive : (where' : String) -> (why : String) -> String
-failDerive where' why = "Failure deriving \{where'}: \{why}"
-
-piFail : (n : Nat) -> n `GT` 0 => (impl : String) -> (dtName : String) -> String
-piFail 1 s dtName = failDerive (s ++ " for \{dtName}") "Can't be derived as it's final parameter is used in a function type."
-piFail n s dtName = failDerive (s ++ " for \{dtName}") "Can't be derived as one of its final \{show n} parameters are used in a function type."
-
-contraFail : (n : Nat) -> n `GT` 0 => (impl : String) -> (dtName : String) -> String
-contraFail 1 s dtName = failDerive (s ++ " for \{dtName}") "Can't be derived as its final parameter is used in negative position of a function type."
-contraFail n s dtName = failDerive (s ++ " for \{dtName}") "Can't be derived as one of its final \{show n} parameters are used in negative position of a function type."
-
-nHoleFail : (n : Nat) -> n `GT` 0 => (impl : String) -> (dtName : String) -> String
-nHoleFail n s dtName = let nhole = concat . List.replicate n $ "Type -> "
-                       in failDerive (s ++ " for \{dtName}") "Can't be derived as its type does not end in \{nhole}Type."
-
-oneHoleFail : (impl : String) -> (dtName : String) -> String
-oneHoleFail s dtName = nHoleFail 1 s dtName
-
-------------------------------------------------------------
-
--- ||| Peel out the names of fields of a constructor into a lhs pattern.
--- expandLhs : Vect cc FParamCon' -> Vect cc TTImp
--- expandLhs = map (\pc => appNames pc.name (map (name . snd) pc.args))
-
--- -- TODO: revisit use of believe_me if it's causing issues with type resolution or repl evaluation
--- ||| Bring together generated lhs/rhs patterns.
--- ||| Handle cases of empty types or phantom types.
--- ||| Foldable has a default value to result in so we don't use believe_me
--- ||| Renames machine-named vars to be more basic
--- makeFImpl : Foldable t => Zippable t => BFParamTypeInfo n -> (isFoldable: Bool) -> t TTImp -> t TTImp -> TTImp
--- makeFImpl fp isFold lhs rhs =
---   let vs = map String.singleton $ drop 23 $ cycle $ rangeFromTo 'a' 'z'
---       clauses = zipWith (\l,r =>
---         let name_map = mkMap $ zipWithStream MkPair (extractNames l) vs
---         in (replaceNames name_map l, replaceNames name_map r)) (toList lhs) (toList rhs)
---       (rn_lhs,rn_rhs) = unzip clauses
---   in  case (isPhantom' fp, null fp.cons, isFold) of
---         (_   ,True,_    ) => iCase (var "implArg") implicitFalse [impossibleClause `(_)] -- No cons, impossible to proceed
---         (True,_   ,False) => `(believe_me implArg) -- Var is phantom and not for Foldable, safely change type
---         _                 => iCase (var "implArg") implicitFalse $ toList $ zipWith (.=) rn_lhs rn_rhs
---   where
---     extractNames : TTImp -> List Name
---     extractNames = mapMaybe (\case IVar _ nm => Just nm; _ => Nothing) . snd . unApp
-
---     mkMap : List (Name,String) -> NameMap Name
---     mkMap xs = runFresh $ foldlM
---       (\m,(n,v) => pure $ NameMap.insert n (srcVarTo_Name !(getNext v)) m) NameMap.empty xs
 
 genBimapTT : BFParamTypeInfo 2 -> TTImp
 genBimapTT fp = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
@@ -164,7 +88,7 @@ BifunctorVis vis g = do
     let iname = "Bifunctor"
         dtName = nameStr $ g.typeInfo.name
     Just fp <- pure $ makeBFParamTypeInfo 2 g
-      | _ => fail (nHoleFail 2 iname dtName)
+      | _ => fail (holeFail 2 iname dtName)
     let allFields = concatMap (map fst . args) fp.cons
     when (any hasNegTargetTT allFields) $ fail (contraFail 2 iname dtName) -- reject contravariant uses of the hole type
     pure $ MkInterfaceImpl iname vis []

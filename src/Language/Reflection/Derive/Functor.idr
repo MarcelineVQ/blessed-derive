@@ -34,43 +34,18 @@ export
 ||| Filter used params for ones that are applied to our last `n` params
 ||| and also supertypes of those. e.g. g (f a) (h l) implies Functor (g (f a)) and Functor h
 argTypesWithParamsAndApps : Nat -> (targets : List (Name,Nat)) -> (params : List TTImp) -> List TTImp
-argTypesWithParamsAndApps n l ss = do
-    p <- ss
-    Just (h,t) <- pure $ stripLAp n p
-      | Nothing => [] -- not enough args
+argTypesWithParamsAndApps n l ps = do
+    p <- ps
+    (h,t) <- maybeToList (stripLAp n p)
     guard $ not . hasTarget $ ttToTagTree l h -- no target in head n-args
-    guard $ any (hasTarget . ttToTagTree l) t -- targer in tail n-args
+    guard $ any (hasTarget . ttToTagTree l) t -- target in tail n-args
     let g = argTypesWithParamsAndApps n l t -- reapply to tail args, e.g. extract h from: g (f a) (h l)
     h :: g
 where
   stripLAp : Nat -> TTImp -> Maybe (TTImp,List TTImp)
-  stripLAp (S n) (IApp fc s u) = case stripLAp n s of
-    Just (h,t) => Just (h,t ++ [u])
-    _ => Nothing
+  stripLAp (S n) (IApp fc s u) = mapSnd (++ [u]) <$> stripLAp n s
   stripLAp (S n) tt = Nothing
   stripLAp Z tt = Just (tt,[])
-
-||| Turn any name into a Basic name
-toBasicName : Name -> Name
-toBasicName = UN . Basic . nameStr
-
-varStream : String -> Stream Name
-varStream s = map (fromString . ("\{s}_" ++) . show) [the Int 1 ..]
-
-toBasicName' : Name -> TTImp
-toBasicName' = var . toBasicName
-
--- -- TODO: rework this entirely to be clean like you did for tree tagging
--- export
--- oneHoleImplementationType : (iface : TTImp) -> (reqImpls : List Name) -> BFParamTypeInfo 1 -> DeriveUtil -> TTImp
--- oneHoleImplementationType iface reqs fp g =
---     let appIface = iface .$ last (var $ fst $ last fp.holeParams)
---         functorVars = nub $ argTypesWithParamsAndApps 1 [(snd fp.holeType, 0)] g.argTypesWithParams
---         autoArgs = piAllAuto appIface $ map (iface .$) functorVars ++ map (\n => app (var n) fp.oneHoleType) reqs
---         ty = piAllImplicit autoArgs (toList . map fst $ init fp.params)
---         cn = foldr (\(n,tt),acc => NameMap.insert n tt acc) NameMap.empty fp.params
---     in replaceNames (runFresh (nameParams fp.params)) ty
---     -- in ty
 
 export
 oneHoleImplementationType : (l1name : Name) -> BFParamTypeInfo 1 -> DeriveUtil -> TTImp
@@ -79,32 +54,34 @@ oneHoleImplementationType l1name fp g =
         l1Vars = nub $ argTypesWithParamsAndApps 1 (numberedList (toList $ map fst fp.holeParams)) g.argTypesWithParams
         autoArgs = piAllAuto appIface $ map (var l1name .$) l1Vars
         ty = piAllImplicit autoArgs (toList . map fst $ fp.params)
-        -- cn = foldr (\(n,tt),acc => NameMap.insert n tt acc) NameMap.empty fp.params
     in replaceNames (runFresh (nameParams fp.params)) ty
-    -- in ty
 
 ------------------------------------------------------------
 -- Failure reporting
 ------------------------------------------------------------
 
+------------------------------------------------------------
+-- Failure reporting
+------------------------------------------------------------
+
+export
 failDerive : (where' : String) -> (why : String) -> String
 failDerive where' why = "Failure deriving \{where'}: \{why}"
 
-piFail : String -> (dtName : String) -> String
-piFail s dtName = failDerive (s ++ " for \{dtName}") "Can't be derived as its final parameter is used in a function type."
+export
+piFail : (n : Nat) -> n `GT` 0 => (impl : String) -> (dtName : String) -> String
+piFail 1 s dtName = failDerive (s ++ " for \{dtName}") "Can't be derived as it's final parameter is used in a function type."
+piFail n s dtName = failDerive (s ++ " for \{dtName}") "Can't be derived as one of its final \{show n} parameters are used in a function type."
 
-contraFail : (impl : String) -> (dtName : String) -> String
-contraFail s dtName = failDerive (s ++ " for \{dtName}") "Can't be derived as its final parameter is used in negative position of a function type."
+export
+contraFail : (n : Nat) -> n `GT` 0 => (impl : String) -> (dtName : String) -> String
+contraFail 1 s dtName = failDerive (s ++ " for \{dtName}") "Can't be derived as its final parameter is used in negative position of a function type."
+contraFail n s dtName = failDerive (s ++ " for \{dtName}") "Can't be derived as one of its final \{show n} parameters are used in negative position of a function type."
 
-nHoleFail : Nat -> (impl : String) -> (dtName : String) -> String
-nHoleFail n s dtName = failDerive (s ++ " for \{dtName}") "Can't be derived as its type does not end in \{nhole}Type."
-  where
-    nhole : String
-    nhole = concat . List.replicate n $ "Type -> "
-
-oneHoleFail : (impl : String) -> (dtName : String) -> String
-oneHoleFail s dtName = nHoleFail 1 s dtName
-
+export
+holeFail : (n : Nat) -> n `GT` 0 => (impl : String) -> (dtName : String) -> String
+holeFail n s dtName = let nhole = concat . List.replicate n $ "Type -> "
+                      in failDerive (s ++ " for \{dtName}") "Can't be derived as its type does not end in \{nhole}Type."
 ------------------------------------------------------------
 
 -- TODO: generate fresh vars for these instead
@@ -185,9 +162,9 @@ FunctorVis vis g = do
     let iname = "Functor"
         dtName = nameStr $ g.typeInfo.name
     Just fp <- pure $ makeBFParamTypeInfo 1 g
-      | _ => fail (oneHoleFail iname dtName)
+      | _ => fail (holeFail 1 iname dtName)
     let allFields = concatMap (map fst . args) fp.cons
-    when (any hasNegTargetTT allFields) $ fail (contraFail iname dtName) -- reject contravariant uses of the hole type
+    when (any hasNegTargetTT allFields) $ fail (contraFail 1 iname dtName) -- reject contravariant uses of the hole type
     pure $ MkInterfaceImpl iname vis []
             (mkFunctorImpl fp)
             (oneHoleImplementationType "Functor" fp g)
@@ -196,11 +173,6 @@ FunctorVis vis g = do
 export
 Functor : DeriveUtil -> Elab InterfaceImpl
 Functor = FunctorVis Public
-
-data DooDad2 : (Type -> Type -> Type) -> (Type -> Type)-> (Type -> Type) -> Type -> Type -> Type where
-  MkDooDad2 : (g (f a) (h (a -> b))) -> DooDad2 g f h a b
-
-%runElab deriveBlessed "DooDad2" [Functor]
 
 -- Should endo be exported for defaultFoldr? Seems ok
 [EndoS] Semigroup (a -> a) where
@@ -268,9 +240,9 @@ FoldableVis vis g = do
     let iname = "Foldable"
         dtName = nameStr $ g.typeInfo.name
     Just fp <- pure $ makeBFParamTypeInfo 1 g
-      | _ => fail (oneHoleFail iname dtName)
+      | _ => fail (holeFail 1 iname dtName)
     let allFields = concatMap (map fst . args) fp.cons
-    when (any hasFunctionT allFields) $ fail (piFail iname dtName) -- reject uses of the hole type in functions
+    when (any hasFunctionT allFields) $ fail (piFail 1 iname dtName) -- reject uses of the hole type in functions
     pure $ MkInterfaceImpl iname vis []
              (mkFoldableImpl fp)
              (oneHoleImplementationType "Foldable" fp g)
@@ -346,13 +318,13 @@ TraversableVis vis g = do
     let iname = "Traversable"
         dtName = nameStr $ g.typeInfo.name
     Just fp <- pure $ makeBFParamTypeInfo 1 g
-      | _ => fail (oneHoleFail iname dtName)
+      | _ => fail (holeFail 1 iname dtName)
     let allFields = concatMap (map fst . args) fp.cons
     let depsFo = oneHoleImplementationType "Foldable" fp g
     let depsFu = oneHoleImplementationType "Functor" fp g
     () <- checkHasImpl "Traversable" "Foldable" fp.name depsFo
     () <- checkHasImpl "Traversable" "Functor" fp.name depsFu
-    when (any hasFunctionT allFields) $ fail (piFail iname dtName) -- reject uses of the hole type in functions
+    when (any hasFunctionT allFields) $ fail (piFail 1 iname dtName) -- reject uses of the hole type in functions
     pure $ MkInterfaceImpl iname vis []
              (mkTraversableImpl fp)
              (oneHoleImplementationType "Traversable" fp g)

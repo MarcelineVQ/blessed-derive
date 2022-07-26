@@ -41,6 +41,20 @@ iterfN : Nat -> (b -> b) -> b -> b
 iterfN Z f = id
 iterfN (S k) f = f . iterfN k f
 
+export
+%inline
+maybeToList : Maybe a -> List a
+maybeToList = maybe [] (::[])
+
+||| Turn any name into a Basic name
+export
+toBasicName : Name -> Name
+toBasicName = UN . Basic . nameStr
+
+export
+toBasicName' : Name -> TTImp
+toBasicName' = var . toBasicName
+
 {-
 getBaseImplementation' : (x : Type) -> Elab x
 getBaseImplementation' implTy = do
