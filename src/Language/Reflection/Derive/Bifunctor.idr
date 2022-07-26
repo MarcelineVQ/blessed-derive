@@ -32,19 +32,6 @@ overlapping instances if a user already wrote one and then derives.
 This doesn't derive indexed types yet, but there's no reason it can't be made to
 -}
 
-export
-||| Filter used params for ones that are applied to our last `n` params
-||| and also supertypes of those. e.g. g (f a) (h l) implies Functor (g (f a)) and Functor h
-argTypesWithParamsAndApps : Nat -> (targets : List (Name,Nat)) -> (params : List TTImp) -> List TTImp
-argTypesWithParamsAndApps n l ss =
-    let q  = filter (hasTarget' . ttToTagTree' l) ss -- filter params that use our targets
-        q' = filter ((>= n) . List.length . snd . unApp) q
-    in map (iterfN n stripLAp) q'
-  where
-    stripLAp : TTImp -> TTImp
-    stripLAp (IApp fc s u) = s
-    stripLAp tt = tt
-
 ||| Turn any name into a Basic name
 toBasicName : Name -> Name
 toBasicName = UN . Basic . nameStr
@@ -73,8 +60,10 @@ export
 twoHoleImplementationType : (l2name,l1name : Name) -> BFParamTypeInfo n -> DeriveUtil -> TTImp
 twoHoleImplementationType l2name l1name fp g =
     let appIface = var l2name .$ fp.nHoleType
-        l2Vars = filter isIVar . nub $ argTypesWithParamsAndApps 2 (numberedList (toList $ map fst fp.holeParams)) g.argTypesWithParams
-        l1Vars = filter isIVar . nub $ argTypesWithParamsAndApps 1 (numberedList (toList $ map fst fp.holeParams)) g.argTypesWithParams
+        -- l2Vars = filter isIVar . nub $ argTypesWithParamsAndApps 2 (numberedList (toList $ map fst fp.holeParams)) g.argTypesWithParams
+        l2Vars = nub $ argTypesWithParamsAndApps 2 (numberedList (toList $ map fst fp.holeParams)) g.argTypesWithParams
+        -- l1Vars = filter isIVar . nub $ argTypesWithParamsAndApps 1 (numberedList (toList $ map fst fp.holeParams)) g.argTypesWithParams
+        l1Vars = nub $ argTypesWithParamsAndApps 1 (numberedList (toList $ map fst fp.holeParams)) g.argTypesWithParams
         autoArgs = piAllAuto appIface $ map (var l1name .$) l1Vars ++ map (var l2name .$) l2Vars
         ty = piAllImplicit autoArgs (toList . map fst $ fp.params)
         cn = foldr (\(n,tt),acc => NameMap.insert n tt acc) NameMap.empty fp.params
@@ -105,61 +94,61 @@ oneHoleFail s dtName = nHoleFail 1 s dtName
 
 ------------------------------------------------------------
 
-||| Peel out the names of fields of a constructor into a lhs pattern.
-expandLhs : Vect cc FParamCon' -> Vect cc TTImp
-expandLhs = map (\pc => appNames pc.name (map (name . snd) pc.args))
+-- ||| Peel out the names of fields of a constructor into a lhs pattern.
+-- expandLhs : Vect cc FParamCon' -> Vect cc TTImp
+-- expandLhs = map (\pc => appNames pc.name (map (name . snd) pc.args))
 
--- TODO: revisit use of believe_me if it's causing issues with type resolution or repl evaluation
-||| Bring together generated lhs/rhs patterns.
-||| Handle cases of empty types or phantom types.
-||| Foldable has a default value to result in so we don't use believe_me
-||| Renames machine-named vars to be more basic
-makeFImpl : Foldable t => Zippable t => BFParamTypeInfo n -> (isFoldable: Bool) -> t TTImp -> t TTImp -> TTImp
-makeFImpl fp isFold lhs rhs =
-  let vs = map String.singleton $ drop 23 $ cycle $ rangeFromTo 'a' 'z'
-      clauses = zipWith (\l,r =>
-        let name_map = mkMap $ zipWithStream MkPair (extractNames l) vs
-        in (replaceNames name_map l, replaceNames name_map r)) (toList lhs) (toList rhs)
-      (rn_lhs,rn_rhs) = unzip clauses
-  in  case (isPhantom' fp, null fp.cons, isFold) of
-        (_   ,True,_    ) => iCase (var "implArg") implicitFalse [impossibleClause `(_)] -- No cons, impossible to proceed
-        (True,_   ,False) => `(believe_me implArg) -- Var is phantom and not for Foldable, safely change type
-        _                 => iCase (var "implArg") implicitFalse $ toList $ zipWith (.=) rn_lhs rn_rhs
-  where
-    extractNames : TTImp -> List Name
-    extractNames = mapMaybe (\case IVar _ nm => Just nm; _ => Nothing) . snd . unApp
+-- -- TODO: revisit use of believe_me if it's causing issues with type resolution or repl evaluation
+-- ||| Bring together generated lhs/rhs patterns.
+-- ||| Handle cases of empty types or phantom types.
+-- ||| Foldable has a default value to result in so we don't use believe_me
+-- ||| Renames machine-named vars to be more basic
+-- makeFImpl : Foldable t => Zippable t => BFParamTypeInfo n -> (isFoldable: Bool) -> t TTImp -> t TTImp -> TTImp
+-- makeFImpl fp isFold lhs rhs =
+--   let vs = map String.singleton $ drop 23 $ cycle $ rangeFromTo 'a' 'z'
+--       clauses = zipWith (\l,r =>
+--         let name_map = mkMap $ zipWithStream MkPair (extractNames l) vs
+--         in (replaceNames name_map l, replaceNames name_map r)) (toList lhs) (toList rhs)
+--       (rn_lhs,rn_rhs) = unzip clauses
+--   in  case (isPhantom' fp, null fp.cons, isFold) of
+--         (_   ,True,_    ) => iCase (var "implArg") implicitFalse [impossibleClause `(_)] -- No cons, impossible to proceed
+--         (True,_   ,False) => `(believe_me implArg) -- Var is phantom and not for Foldable, safely change type
+--         _                 => iCase (var "implArg") implicitFalse $ toList $ zipWith (.=) rn_lhs rn_rhs
+--   where
+--     extractNames : TTImp -> List Name
+--     extractNames = mapMaybe (\case IVar _ nm => Just nm; _ => Nothing) . snd . unApp
 
-    mkMap : List (Name,String) -> NameMap Name
-    mkMap xs = runFresh $ foldlM
-      (\m,(n,v) => pure $ NameMap.insert n (srcVarTo_Name !(getNext v)) m) NameMap.empty xs
+--     mkMap : List (Name,String) -> NameMap Name
+--     mkMap xs = runFresh $ foldlM
+--       (\m,(n,v) => pure $ NameMap.insert n (srcVarTo_Name !(getNext v)) m) NameMap.empty xs
 
 genBimapTT : BFParamTypeInfo 2 -> TTImp
 genBimapTT fp = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
   where
     ||| Stateful so that we can create unique variable names as we go
-    ttGenMap : MonadState VarSrc m => (tt : TagTree') -> (var : TTImp) -> m TTImp
-    ttGenMap SkipT' x = pure x
-    ttGenMap (TargetT' t) x = pure $ case t of Z => `(f1 ~x); _ => `(f2 ~x)
-    ttGenMap (AppT' 1 SkipT' r) x = do -- map case
-        n <- getNextAsName' "y"
+    ttGenMap : MonadState VarSrc m => (tt : TagTree) -> (var : TTImp) -> m TTImp
+    ttGenMap SkipT x = pure x
+    ttGenMap (TargetT t) x = pure $ case t of Z => `(f1 ~x); _ => `(f2 ~x)
+    ttGenMap (AppT 1 SkipT r) x = do -- map case
+        n <- getNextAsName "y"
         pure `(map ~(lambdaArg n .=> !(ttGenMap r (var n))) ~x)
-    ttGenMap (AppT' n l r) x = do
-        n <- getNextAsName' "y"
+    ttGenMap (AppT n l r) x = do
+        n <- getNextAsName "y"
         -- Strip off an app and get the last two params at once
         -- e.g: in `g a b c d` ~ `(((g a) b) c) d` this gets us bimap over c and d
-        let l' = case l of AppT' _ _ l' => l'; _ => l
+        let l' = case l of AppT _ _ l' => l'; _ => l
         pure $ `(bimap ~(lambdaArg n .=> !(ttGenMap l' (var n))) ~(lambdaArg n .=> !(ttGenMap r (var n))) ~x)
-    ttGenMap (TupleT' {n} ts) x = do
+    ttGenMap (TupleT {n} ts) x = do
         names <- map var <$> replicateA (S (S n)) (srcVarToName' <$> getNext "t")
         let lhs = foldr1 (\n,acc => `(MkPair ~n ~acc)) names
             tts = zip ts names
         rhs <- foldr1 (\l,r => `(MkPair ~l ~r)) <$> traverse (uncurry ttGenMap) tts
         pure `(case ~x of ~lhs => ~rhs)
-    ttGenMap (FunctionT' _ l r) x = do
+    ttGenMap (FunctionT _ l r) x = do
         n <- getNextAsName' "p"
         pure $ lambdaArg n .=> !(ttGenMap r (x .$ !(ttGenMap l (var n))))
 
-    rhss : Vect cc FParamCon' -> Vect cc TTImp
+    rhss : Vect cc FParamCon -> Vect cc TTImp
     rhss = map (\pc => appAll pc.name (map (\(tag, arg) =>
       runFresh $ ttGenMap tag (var arg.name)) pc.args))
 
@@ -177,7 +166,7 @@ BifunctorVis vis g = do
     Just fp <- pure $ makeBFParamTypeInfo 2 g
       | _ => fail (nHoleFail 2 iname dtName)
     let allFields = concatMap (map fst . args) fp.cons
-    when (any hasNegTargetTT' allFields) $ fail (contraFail 2 iname dtName) -- reject contravariant uses of the hole type
+    when (any hasNegTargetTT allFields) $ fail (contraFail 2 iname dtName) -- reject contravariant uses of the hole type
     pure $ MkInterfaceImpl iname vis []
             (mkBifunctorImpl fp)
             (twoHoleImplementationType "Bifunctor" "Functor" fp g)

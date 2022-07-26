@@ -38,7 +38,7 @@ getStuff n = do
   -- tyinfo <- getInfo' n
   eff <- getParamInfo' n
   let g = genericUtil eff
-  Just fp <- pure $ makeFParamTypeInfo g
+  Just fp <- pure $ makeBFParamTypeInfo 1 g
     | _ => fail "no"
   r2 <- FunctorVis Public g
   -- r2 <- FoldableVis Public g
@@ -275,36 +275,36 @@ export
 infoF4 : ParamTypeInfo
 infoF4 = getParamInfo "F4"
 
-export
-infoF4F : FParamTypeInfo
-infoF4F = case makeFParamTypeInfo (genericUtil infoF4) of
-            Just x => x
-            Nothing => believe_me 0
+-- export
+-- infoF4F : BFParamTypeInfo 1
+-- infoF4F = case makeBFParamTypeInfo 1 (genericUtil infoF4) of
+--             Just x => x
+--             Nothing => believe_me 0
 
-data FooTup a = MkFooTup (Int,a,Char)
+-- data FooTup a = MkFooTup (Int,a,Char)
 
-data FooTup2 a b = MkFooTup2 (Int,a,b,Char)
+-- data FooTup2 a b = MkFooTup2 (Int,a,b,Char)
 
-export
-infoFooTup : ParamTypeInfo
-infoFooTup = getParamInfo "FooTup"
+-- export
+-- infoFooTup : ParamTypeInfo
+-- infoFooTup = getParamInfo "FooTup"
 
-export
-infoFooTup2 : ParamTypeInfo
-infoFooTup2 = getParamInfo "FooTup2"
+-- export
+-- infoFooTup2 : ParamTypeInfo
+-- infoFooTup2 = getParamInfo "FooTup2"
 
 
-export
-infoFooTup2F : FParamTypeInfo
-infoFooTup2F = case makeFParamTypeInfo (genericUtil infoFooTup2) of
-            Just x => x
-            Nothing => believe_me 0
+-- export
+-- infoFooTup2F : FParamTypeInfo
+-- infoFooTup2F = case makeFParamTypeInfo (genericUtil infoFooTup2) of
+--             Just x => x
+--             Nothing => believe_me 0
 
-export
-infoFooTupF : FParamTypeInfo
-infoFooTupF = case makeFParamTypeInfo (genericUtil infoFooTup) of
-            Just x => x
-            Nothing => believe_me 0
+-- export
+-- infoFooTupF : FParamTypeInfo
+-- infoFooTupF = case makeFParamTypeInfo (genericUtil infoFooTup) of
+--             Just x => x
+--             Nothing => believe_me 0
 
 data Raf : Type -> Type -> Type where
   -- MkRaf : a -> b -> Maybe b -> (a,b) -> (a -> a -> b) -> Raf a b
@@ -316,11 +316,11 @@ export
 infoRaf : ParamTypeInfo
 infoRaf = getParamInfo "Raf"
 
-export
-infoRafF : FParamTypeInfo
-infoRafF = case makeFParamTypeInfo (genericUtil infoRaf) of
-            Just x => x
-            Nothing => believe_me 0
+-- export
+-- infoRafF : FParamTypeInfo
+-- infoRafF = case makeFParamTypeInfo (genericUtil infoRaf) of
+--             Just x => x
+--             Nothing => believe_me 0
 
 -- %runElab getStuff `{Raf}
 %runElab deriveBlessed `{Raf} [Functor]
@@ -384,12 +384,12 @@ export
 infoFraf : ParamTypeInfo
 infoFraf = getParamInfo "Fraf"
 
-export
-infoFrafF : FParamTypeInfo
-infoFrafF = case makeFParamTypeInfo (genericUtil infoFraf) of
-            Just x => x
-            Nothing => believe_me 0
--- %runElab getStuff `{Fraf}
+-- export
+-- infoFrafF : FParamTypeInfo
+-- infoFrafF = case makeFParamTypeInfo (genericUtil infoFraf) of
+--             Just x => x
+--             Nothing => believe_me 0
+-- -- %runElab getStuff `{Fraf}
 
 
 data FooAZ : Type -> Type -> (Type -> Type) -> Type where
