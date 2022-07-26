@@ -45,6 +45,8 @@ export
 %inline
 maybeToList : Maybe a -> List a
 maybeToList = maybe [] (::[])
+-- maybeToList' : Maybe a -> List a
+-- maybeToList' = lowerMaybe . map (::[])
 
 ||| Turn any name into a Basic name
 export

@@ -88,7 +88,7 @@ holeFail n s dtName = let nhole = concat . List.replicate n $ "Type -> "
 ||| Peel out the names of fields of a constructor into a lhs pattern.
 export
 expandLhs : Vect cc FParamCon -> Vect cc TTImp
-expandLhs = map (\pc => appNames pc.name (map (toBasicName . name . snd) pc.args))
+expandLhs = map (\pc => appNames pc.name (map (name . snd) pc.args))
 
 -- -- TODO: revisit use of believe_me if it's causing issues with type resolution or repl evaluation
 -- ||| Bring together generated lhs/rhs patterns.
@@ -148,7 +148,7 @@ genMapTT fp = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
         pure $ lambdaArg n .=> !(ttGenMap r (x .$ !(ttGenMap l (var n))))
 
     rhss : Vect cc FParamCon -> Vect cc TTImp
-    rhss = map (\pc => appAll pc.name (map (\(tag, arg) => runFresh $ ttGenMap tag (toBasicName' arg.name)) pc.args))
+    rhss = map (\pc => appAll pc.name (map (\(tag, arg) => runFresh $ ttGenMap tag (var arg.name)) pc.args))
 
 
 mkFunctorImpl : BFParamTypeInfo 1 -> TTImp
@@ -209,7 +209,7 @@ genFoldMapTT fp = makeFImpl fp True (expandLhs fp.cons) (rhss fp.cons)
     rhss = map (\pc => case filter (not . isSkipT . fst) pc.args of
         [] => `(neutral) -- foldl1 instead of foldl to avoid extra <+> on neutral
         cs@(_ :: _) => foldl1 (\acc,x => `(~acc <+> ~x))
-          (map (\(tag, arg) => runFresh $ ttGenFoldMap tag (toBasicName' arg.name)) cs))
+          (map (\(tag, arg) => runFresh $ ttGenFoldMap tag (var arg.name)) cs))
 
 -- e.g :
 public export
@@ -281,7 +281,7 @@ genTraverseTT fp = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
     conFunc : MonadState VarSrc m => FParamCon -> m TTImp
     conFunc pc = do
         (body,names) <- foldlM (\(tt,ns),(tag,arg) => if isSkipT tag
-                    then pure $ (tt .$ toBasicName' arg.name, ns)
+                    then pure $ (tt .$ var arg.name, ns)
                     else do n <- getNextAsName' "larg"
                             pure $ ((tt .$ var n), n :: ns)) (var pc.name,[]) pc.args
         pure $ foldl (\tt,sn => lambdaArg sn .=> tt) body (the (List Name) names)
@@ -290,9 +290,9 @@ genTraverseTT fp = makeFImpl fp False (expandLhs fp.cons) (rhss fp.cons)
     rhss : Vect cc FParamCon -> Vect cc TTImp
     rhss = map $ \pc => runFresh $ do
         (a :: aps) <- traverse (\(tag, arg) =>
-          ttGenTraverse tag (toBasicName' arg.name)) (filter (not . isSkipT . fst) pc.args)
+          ttGenTraverse tag (var arg.name)) (filter (not . isSkipT . fst) pc.args)
                   -- reapply lhs under pure if all vars are SkipT
-          | [] => pure $ `(pure) .$ appNames pc.name (toBasicName . name . snd <$> pc.args)
+          | [] => pure $ `(pure) .$ appNames pc.name (name . snd <$> pc.args)
         rc <- conFunc pc
         pure $ foldl (\acc,x => `(~acc <*> ~x)) `(~rc <$> ~a) aps
 
