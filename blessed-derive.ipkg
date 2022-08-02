@@ -2,7 +2,7 @@ package blessed-derive
 
 sourcedir   = "src"
 authors     = "MarcelineVQ"
-version    = 0.4.9
+version    = 0.6.9 -- nice
 readme     = "README.md"
 license    = "CC0 (refer to LICENSE file)"
 homepage    = "https://github.com/MarcelineVQ/blessed-derive"
@@ -14,12 +14,15 @@ depends    = base    >= 0.5.1
            , contrib >= 0.5.1 -- SortedMap
            , elab-util >= 0.5.0
 
-modules = Language.Reflection.Blessed
-        , Language.Reflection.Derive.Functor
-        , Language.Reflection.Derive.Bifunctor
-        , Language.Reflection.Derive.Newtype
-        , Language.Reflection.Derive.Types
-        , Language.Reflection.Is
-        , Language.Reflection.Test
+modules
+  = Language.Reflection.Blessed
+  , Language.Reflection.Derive.Functor
+  , Language.Reflection.Derive.Bifunctor
+  , Language.Reflection.Derive.Newtype
+  , Language.Reflection.Derive.Types
+  , Language.Reflection.Is
+  , Language.Reflection.Derive.Eq
+  -- , Language.Reflection.Test
+  --, Language.Reflection.Test2
 
--- main = Language.Reflection.Derive.Bifunctor
+-- main = Language.Reflection.Test2

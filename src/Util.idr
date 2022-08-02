@@ -1,6 +1,7 @@
 module Util
 
 import Data.Vect -- Vect.Nil
+import Data.DPair -- Subset
 
 import Data.List -- instance Zippable List
 
@@ -25,9 +26,20 @@ namespace ZipStreamL
   zipWithStream : (a -> b -> c) -> List a -> Stream b -> List c
   zipWithStream f [] _ = []
   zipWithStream f (x :: xs) (y :: ys) = f x y :: zipWithStream f xs ys
+namespace ZipStreamVL
+  export
+  zipWithStream : (a -> b -> c) -> Vect n a -> Stream b -> Vect n c
+  zipWithStream f [] _ = []
+  zipWithStream f (x :: xs) (y :: ys) = f x y :: zipWithStream f xs ys
+
 namespace ZipStreamR
   export
   zipWithStream : (a -> b -> c) -> Stream a -> List b -> List c
+  zipWithStream f _ [] = []
+  zipWithStream f (x :: xs) (y :: ys) = f x y :: zipWithStream f xs ys
+namespace ZipStreamVR
+  export
+  zipWithStream : (a -> b -> c) -> Stream a -> Vect n b -> Vect n c
   zipWithStream f _ [] = []
   zipWithStream f (x :: xs) (y :: ys) = f x y :: zipWithStream f xs ys
 
@@ -35,6 +47,11 @@ export
 %inline
 numberedList : Range b => Num b => List a -> List (a,b)
 numberedList xs = zipWithStream (\x,y => (x,y)) xs [0..]
+
+export
+%inline
+numberedVect : Range b => Num b => Vect n a -> Vect n (a,b)
+numberedVect xs = zipWithStream (\x,y => (x,y)) xs [0..]
 
 export
 iterfN : Nat -> (b -> b) -> b -> b
@@ -56,6 +73,12 @@ toBasicName = UN . Basic . nameStr
 export
 toBasicName' : Name -> TTImp
 toBasicName' = var . toBasicName
+
+export
+stripLAp : Nat -> TTImp -> Maybe (TTImp,List TTImp)
+stripLAp (S n) (IApp fc s u) = mapSnd (++ [u]) <$> stripLAp n s
+stripLAp (S n) tt = Nothing
+stripLAp Z tt = Just (tt,[])
 
 {-
 getBaseImplementation' : (x : Type) -> Elab x

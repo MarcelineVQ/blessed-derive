@@ -35,6 +35,37 @@ data Foo : (Type -> Type) -> Type -> Type -> Type where
 %runElab deriveBlessed "Foo" [Functor, Foldable, Traversable]
 ```
 
+Some support for Eq and DecEq exists in the form of what you see in Derive.Functor
+generating the entire signaturelike Functor/Foldable/etc do is planned but I haven't reworked it yet.
+```idris2
+import Language.Reflection.Derive.Eq
+%language ElabReflection
+
+data Foo : Type -> (Type -> Type) -> Type -> Type where
+  MkFoo1 : a -> Foo a f b
+  MkFoo2 : b -> Foo a f b
+  MkFoo2' : a -> b -> f a -> Foo a f b
+  MkFoo3 : Foo a f b
+  MkFoo4 : f a -> Foo a f b
+  MkFoo5 : f (f b) -> Foo a f b
+  -- MkFoo6 : {g : b} -> f (f b) -> Foo a f b -- explcit implicits not handled yet
+
+export
+%hint
+eqImpTest : Eq a => Eq b => Eq (f a) => (Eq (f (f b))) => Eq (Foo a f b)
+-- eqImpTest : Eq (Foo a f b)
+eqImpTest = %runElab eqGen
+
+export
+%hint
+decEqImpTest : DecEq a => DecEq b => DecEq (f a) => (DecEq (f (f b))) => DecEq (Foo a f b)
+decEqImpTest = %runElab decEqGen
+
+faf : MkFoo3 {a=Int} {f=Maybe} {b=Bool} = MkFoo3
+faf = Refl
+```
+
+
 ## Issues
 
 The largest issue with this as it stands is that there's no warning for clashing instances until use. You can define Functor yourself and also derive it but there won't be an error until you use map. There may be a clue for solving that in the error you get about defaultFoldr when having clashing Foldables.
@@ -44,7 +75,6 @@ This doesn't derive indexed types yet, but there's no reason it can't be made to
 ## Next
 
 Other potential/planned instances to derive will include
-- `Eq`
 - `Ord`
 - `Range`
 - `Uninhabited`
@@ -93,5 +123,6 @@ But Is could be beneficial to save some writing, and is kinda fun!
 
 ## Related Libraries
 
+[idris2 Functor deriving](https://github.com/idris-lang/Idris2/blob/main/libs/base/Deriving/Functor.idr)
 [sop](https://github.com/stefan-hoeck/idris2-sop) by [Stefan Hoeck](https://github.com/stefan-hoeck)  
 [newtype-deriving](https://github.com/MarcelineVQ/idris2-newtype-deriving) by [some jerk](https://github.com/MarcelineVQ)  
