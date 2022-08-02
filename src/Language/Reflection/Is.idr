@@ -29,12 +29,11 @@ deriveIs tyName vis= do
       [(head,body)]
     declare $ uncurry (++) $ unzip decs
 
-public export
-data Foo : Type -> (Type -> Type) -> Type -> Type where
-  MkFoo1 : a -> Foo a f b
-  MkFoo2 : b -> Foo a f b
-  MkFoo3 : Foo a f b
-  MkFoo6 : f a -> Foo a f b
-  MkFoo0 : f (f b) -> Foo a f b
+-- data Foo : Type -> (Type -> Type) -> Type -> Type where
+--   MkFoo1 : a -> Foo a f b
+--   MkFoo2 : b -> Foo a f b
+--   MkFoo3 : Foo a f b
+--   MkFoo6 : f a -> Foo a f b
+--   MkFoo0 : f (f b) -> Foo a f b
 
-%runElab deriveIs "Foo" Public
+-- %runElab deriveIs "Foo" Public

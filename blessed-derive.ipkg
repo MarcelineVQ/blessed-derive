@@ -2,7 +2,7 @@ package blessed-derive
 
 sourcedir   = "src"
 authors     = "MarcelineVQ"
-version    = 0.6.9 -- nice
+version    = 0.6.10
 readme     = "README.md"
 license    = "CC0 (refer to LICENSE file)"
 homepage    = "https://github.com/MarcelineVQ/blessed-derive"
@@ -18,11 +18,11 @@ modules
   = Language.Reflection.Blessed
   , Language.Reflection.Derive.Functor
   , Language.Reflection.Derive.Bifunctor
-  , Language.Reflection.Derive.Newtype
+  -- , Language.Reflection.Derive.Newtype
   , Language.Reflection.Derive.Types
   , Language.Reflection.Is
   , Language.Reflection.Derive.Eq
-  -- , Language.Reflection.Test
+   -- , Language.Reflection.Test
   --, Language.Reflection.Test2
 
--- main = Language.Reflection.Test2
+-- main = Language.Reflection.Derive.Eq
