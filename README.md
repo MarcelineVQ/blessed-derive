@@ -44,11 +44,13 @@ import Language.Reflection.Derive.Eq
 data Foo : Type -> (Type -> Type) -> Type -> Type where
   MkFoo1 : a -> Foo a f b
   MkFoo2 : b -> Foo a f b
-  MkFoo2' : a -> b -> f a -> Foo a f b
-  MkFoo3 : Foo a f b
-  MkFoo4 : f a -> Foo a f b
-  MkFoo5 : f (f b) -> Foo a f b
-  -- MkFoo6 : {g : b} -> f (f b) -> Foo a f b -- explcit implicits not handled yet
+  MkFoo3 : a -> b -> f a -> Foo a f b
+  MkFoo4 : Foo a f b
+  MkFoo5 : f a -> Foo a f b
+  MkFoo6 : f (f b) -> Foo a f b
+  -- MkFoo7 : (0 _ : f (f b)) -> Foo a f b -- TODO: not valid for DecEq yet, if at all
+  MkFoo8 : {g : b} -> f (f b) -> Foo a f b
+  MkFoo9 : {_ : b} -> f (f b) -> Foo a f b
 
 export
 %hint

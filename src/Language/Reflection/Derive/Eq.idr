@@ -10,30 +10,48 @@ import public Data.Either -- partitionEithers
 
 %language ElabReflection
 
--- Module is a mix of elab-util and Derive.Functor approaches
+%inline -- thank you ohad for this non-elab trick
+||| MkDecEq isn't currently specificied in DecEq's definition, so we need to grab it ourselves.
+MkDecEq : ((x : t) -> (y : t) -> Dec (x = y)) -> DecEq t
+MkDecEq f = MkDecEq' {f}
+  where %inline [MkDecEq'] {f : (x,y : t) -> Dec (x === y)} -> DecEq t where decEq = f
+-- vs
+MkDecEq' : ((x : t) -> (y : t) -> Dec (x = y)) -> DecEq t
+MkDecEq' = %runElab do
+  let decEqConName = `{Decidable.Equality.Core.DecEq} -- specific to reduce finding multiple DecEq
+  [decEqCon] <- getCons decEqConName
+    | _ => fail "Couldn't get DecEq constructor expected at \{show decEqConName}"
+  check (var decEqCon)
+
+-- Module is a mix of elab-util and Derive.Functor approaches.
+-- I like elab-util's approach of generating the whole implementation and
+-- constraints but I like Derive.Functor's approach of local declarations.
+-- I'd like to find the best approach and then adopt that, removing my need
+-- for elab-utils. It's very lovely library, I'd just like to reduce my
+-- dependency footprint. Technically even contrib is probably too much given
+-- how useful deriving is. Using SortedMap isn't really neccesary for fresh
+-- vars, but it is prettty useful for renaming.
 
 record ConstructorView where
   constructor MkConstructorView
-  conName : Name
+  conName     : Name
   params      : List Name
   conArgTypes : List TTImp
 
 record ArgView where
   constructor MkArgView
-  name : Maybe Name
-  ty : TTImp
-  count : Count
+  name       : Maybe Name
+  ty         : TTImp
+  count      : Count
   isExplicit : Bool -- or should we just have the PiInfo and query with isExplicitArg?
 -- %runElab deriveIs "PiInfo" Private
 
 
 record ConstructorView' where
   constructor MkConstructorView'
-  name : Name
-  params      : List Name
-  -- conArgTypes : List (TTImp,Count,Bool,Maybe Name)
-  conArgTypes : List ArgView
-
+  name    : Name
+  params  : List Name
+  conArgs : List ArgView
 
 -- taken from gallais straightforward solution in Deriving.Functor
 -- Note how he keeps the arg ttimps, useful for computing applications or pi content later
@@ -41,7 +59,17 @@ record ConstructorView' where
 -- `x -> ... -> end`
 -- If it's implicit or auto we skip it, we add everything else as TTImp, when we get
 -- to the end we examine the final type and extract its params. Note that this could
--- get quite interesting with indices invovled
+-- get quite interesting with indices involved.
+-- I really like how { } is being used here as a function itself.
+--------------------------------------------------
+-- gallais is an endless source of useful code practices.
+--------------------------------------------------
+-- I would have done something dumb like:
+-- (\(MkConstructorView n p c) => MkConstructorView n p (a :: c)) <$> explicits n b
+-- which is already silly because I should write:
+-- (\cv => { conArgTypes $= (a ::) } cv) <$> explicits n b
+-- which is still more verbose than the nice:
+-- { conArgTypes $= (a ::) } <$> explicits n b
 export
 explicits : Name -> TTImp -> Maybe ConstructorView
 explicits n (IPi fc rig ExplicitArg x a b) = { conArgTypes $= (a ::) } <$> explicits n b
@@ -54,25 +82,27 @@ explicits n f@(IApp _ _ _) = do
   pure (MkConstructorView n (ps <>> []) [])
 explicits _ _ = Nothing
 
--- above, modified to handle explicit implicits
+-- above, modified to handle explicit implicits.
+-- We care about Count because a non-zero implicit is actually explicit.
+-- Further we care about Count because a zero-explicit needs special handling during use.
+-- flip confused the lambda type, so we've unflipped it
 explicits' : Name -> TTImp -> Maybe ConstructorView'
 explicits' n (IPi fc rig pi_info x a b) = case (rig,pi_info) of
-  (M0, ExplicitArg) => { conArgTypes $= (MkArgView x a rig True ::) } <$> explicits' n b
+  (M0, ExplicitArg) => { conArgs $= (MkArgView x a rig True ::) } <$> explicits' n b
   (M0, _) => explicits' n b
-  (_, ExplicitArg) => { conArgTypes $= (MkArgView x a rig True ::) } <$> explicits' n b
-  (_, ImplicitArg) => { conArgTypes $= (MkArgView x a rig False ::) } <$> explicits' n b
+  (_, ExplicitArg) => { conArgs $= (MkArgView x a rig True ::) } <$> explicits' n b
+  (_, ImplicitArg) => { conArgs $= (MkArgView x a rig False ::) } <$> explicits' n b
   _ => explicits' n b
 explicits' n f@(IApp _ _ _) = do
   MkAppView _ ts _ <- appView f
-  let ps = flip mapMaybe ts $ \ t' => the (Maybe Name) $ case t' of
-             Arg _ v@(IVar _ nm) => Just nm
-             _ => Nothing
+  let ps = mapMaybe (\case (Arg _ v@(IVar _ nm)) => Just nm; _ => Nothing) ts
   pure (MkConstructorView' n (ps <>> []) [])
+explicits' n f@(IVar _ _) = pure (MkConstructorView' n [] [])
 explicits' _ _ = Nothing
 
 patHead : String -> ConstructorView' -> TTImp
 patHead varPre con = runFresh $ do
-  args <- traverse (\a => pure (a, srcVarTo_Name' !(getNext varPre))) con.conArgTypes
+  args <- traverse (\a => pure (a, srcVarTo_Name' !(getNext varPre))) con.conArgs
   pure $ foldl (\acc,(a,n) => case a of
       MkArgView _ _ M0 _ => IApp EmptyFC acc `(_) -- explciit but M0
       MkArgView _ _ _ True => IApp EmptyFC acc (var n) -- explicit
@@ -81,8 +111,8 @@ patHead varPre con = runFresh $ do
 
 patBod : String -> String -> (TTImp -> TTImp -> TTImp) -> ConstructorView' -> List TTImp
 patBod varPre1 varPre2 fun con = runFresh $ do
-  args1 <- traverse (\a => pure (a, srcVarTo_Name' !(getNext varPre1))) con.conArgTypes
-  args2 <- traverse (\_ => pure (srcVarTo_Name' !(getNext varPre2))) con.conArgTypes
+  args1 <- traverse (\a => pure (a, srcVarTo_Name' !(getNext varPre1))) con.conArgs
+  args2 <- traverse (\_ => pure (srcVarTo_Name' !(getNext varPre2))) con.conArgs
   pure $ foldr (\((a,n1),n2),acc => case a of
       MkArgView _ _ M0 _ => acc -- explciit but M0
       MkArgView _ _ _ _ => fun (var n1) (var n2) :: acc) -- explicit, or explicit implicit
@@ -94,18 +124,17 @@ eqGen = do
   Just (IApp _ (IVar fc `{Prelude.EqOrd.Eq}) t) <- goal
     | _ => fail "bad goal: expected form like, Eq a => Eq (Foo a)"
   Just appGoal <- pure $ appView t
-    | _ => fail "notAp"
-  Just paramSource <- pure $ explicits (snd appGoal.head) t
-    | _ => fail "notAp"
+    | _ => fail "goalNotAp"
+  let paramSource = fromMaybe [] (params <$> (explicits (snd appGoal.head) t))
   consTT <- traverse lookupName !(getCons (snd appGoal.head))
-  Just consWithExplicits <- pure $ traverse (uncurry explicits') consTT
-    | Nothing => fail "Failed to get cons of \{show $ snd appGoal.head}"
+  traverse_ (logTerm "" 1 "" . snd) consTT
+  let consWithExplicits = fromMaybe [] $ traverse (uncurry explicits') consTT
 
   let implName' = "eqGenFun"
   let implName = var implName'
 
   -- differentiate params from indices, params will result in Type
-  (params,indices) <- partitionEithers <$> (for paramSource.params $ \p => do
+  (params,indices) <- partitionEithers <$> (for paramSource $ \p => do
     (_,(IType _)) <- unPi <$> getLocalType p
       | _ => pure $ Right p
     pure $ Left p)
@@ -132,6 +161,15 @@ eqGen = do
     , IDef fc implName' cls
     ] `(MkEq {ty = ~(t)} (\x,y => ~implName x y) (\x,y => not (~implName x y)) )
 
+data Bap : Type where
+  MkBap : Int -> Bap
+  MkBap2 : {b : Char} -> Int -> Bap
+
+%hint
+export
+eqBap : Eq Bap
+eqBap = %runElab eqGen
+
 -- The assert_total is because idris thinks the tuples aren't covering
 -- I'm not sure how they wouldn't be, so hopefully they're fine, as they avoid a ton of
 -- nested cases here. Though I'm sure they're elaborated into them eventually.
@@ -139,12 +177,6 @@ conPairings : TTImp -> (ConstructorView, ConstructorView) -> Clause
 conPairings implName (MkConstructorView n1 p1 ts1,MkConstructorView n2 p2 ts2) =
   if n1 == n2
     then runFresh $ do
-      -- let cls = (consWithExplicits <&> \c =>
-      --   `(~implName ~(patHead "x" c) ~(patHead "y" c)) .=
-      --     let apps@(_ :: _) = patBod "x" "y" (\x,y => `(~x `decEq ~y)) c
-      --       | _ => `(Yes Refl) -- vacuously yes if no args are used
-      --     in foldr1 (\p,ps => `(~p && ~ps)) apps)
-      --   ++ [`(~implName _ _) .= `(False)]
       lvs <- traverse (\_ => var . srcVarTo_Name' <$> (getNext "x")) ts1
       rvs <- traverse (\_ => var . srcVarTo_Name' <$> (getNext "y")) ts1
       apps@(_ :: _) <- pure $ (zipWith (\l,r => `(~l `decEq` ~r)) lvs rvs)
@@ -157,7 +189,7 @@ conPairings implName (MkConstructorView n1 p1 ts1,MkConstructorView n2 p2 ts2) =
              rvs = map (const `(_)) ts2
          in if (p1 == p2) -- if indices don't differ, use No
            then `(~implName ~(appAll n1 lvs) ~(appAll n2 rvs)) .= `(No (\case _ impossible))
-           else impossibleClause `(~implName ~(appAll n1 lvs) ~(appAll n2 rvs)) -- .= `(No (\case _ impossible))
+           else impossibleClause `(~implName ~(appAll n1 lvs) ~(appAll n2 rvs))
 
 export
 decEqGen : Elab (DecEq a)
@@ -166,17 +198,15 @@ decEqGen = do
     | _ => fail "bad goal: expected form like, DecEq a => DecEq (Foo a)"
   Just appGoal <- pure $ appView t
     | _ => fail "goalNotAp"
-  Just paramSource <- pure $ explicits (snd appGoal.head) t
-    | _ => fail "goalNotAp"
+  let paramSource = fromMaybe [] (params <$> (explicits (snd appGoal.head) t))
   consTT <- traverse lookupName !(getCons (snd appGoal.head))
-  Just consWithExplicits <- pure $ traverse (uncurry explicits) consTT
-    | Nothing => fail "Failed to get cons of \{show $ snd appGoal.head}"
+  let consWithExplicits = fromMaybe [] $ traverse (uncurry explicits) consTT
 
   let implName' = "decEqGenFun"
   let implName = var implName'
   
   -- differentiate params from indices, params will result in Type
-  (params,indices) <- partitionEithers <$> (for paramSource.params $ \p => do
+  (params,indices) <- partitionEithers <$> (for paramSource $ \p => do
     (_,(IType _)) <- unPi <$> getLocalType p
       | _ => pure $ Right p
     pure $ Left p)
@@ -192,14 +222,10 @@ decEqGen = do
     joinBy "\n" ("" :: ("  " ++ show ty)
                     :: map (("  " ++) . showClause InDecl) cls)
 
-  -- con not exposed by default
-  let decEqConName = `{Decidable.Equality.Core.DecEq}
-  [decEqCon] <- getCons decEqConName
-    | _ => fail "Couldn't get DecEq constructor expected at \{show decEqConName}"
   check $ ILocal EmptyFC
     [ IClaim fc MW Private [] ty
     , IDef fc implName' cls
-    ] `(~(var decEqCon) {t = ~(t)} (\x,y => ~implName x y))
+    ] `( MkDecEq {t = ~(t)} (\x,y => ~implName x y))
 
 -- this tells me that further work is needed to determine 0 constructors with no
 -- useable arguments for deceq
@@ -211,16 +237,16 @@ data Foo : Type -> (Type -> Type) -> Type -> Type where
   MkFoo5 : f a -> Foo a f b
   MkFoo6 : f (f b) -> Foo a f b
   MkFoo7 : (0 _ : f (f b)) -> Foo a f b -- TODO: not valid for DecEq :X What does this say about validity for Eq?
-  MkFoo8 : {g : b} -> f (f b) -> Foo a f b
-  MkFoo9 : {_ : b} -> f (f b) -> Foo a f b
-  -- ^ how handle this? nvm, appearantly it's given a name and handled already in the compiler
+  MkFoo8 : {g : b} -> f (f b) -> Foo a f b -- TODO: not handled for DecEq yet
+  MkFoo9 : {_ : b} -> f (f b) -> Foo a f b -- TODO: not handled for DecEq yet
+  -- ^ how handle this? nvm, appearantly it's given a name in the compiler
 
 %hint
 eqImpTest : Eq a => Eq b => Eq (f a) => (Eq (f (f b))) => Eq (Foo a f b)
-eqImpTest = %runElab eqGen
+-- eqImpTest = %runElab eqGen
 
 eqImpTest2 : Eq a => Eq (Vect n a)
-eqImpTest2 = %runElab eqGen
+-- eqImpTest2 = %runElab eqGen
 
 -- this means we need to allow for Count annotation for instances as well
 -- 0 decEq' : DecEq a => DecEq b => DecEq (f a) => (DecEq (f (f b))) => (x,y : Foo a f b) -> Dec (x = y)
@@ -240,13 +266,34 @@ eqImpTest2 = %runElab eqGen
 -- ErasedDecEq : DecEq a => DecEq (FooA a)
 -- ErasedDecEq = MkDecEq {f = decEq'}
 
--- DecEq b => DecEq (f (f b)) => DecEq (Foo a f b) where
---   decEq (MkFoo7 x) (MkFoo7 y) = Yes $ decEq' x y
---   decEq (MkFoo8 {g=x0} x) (MkFoo8 {g=y0} y) = assert_total $ case (decEq x0 y0, decEq x y) of
---     (Yes Refl,Yes Refl) => Yes Refl
---     (No contra,_) => No (\Refl => contra Refl)
---   decEq (MkFoo7 x) (MkFoo8 y) = No (\case _ impossible)
---   decEq (MkFoo8 x) (MkFoo7 y) = No (\case _ impossible)
+-- {0 baf : DecEq (f (f b))} -> DecEq b => DecEq (Foo a f b) where
+  -- decEq (MkFoo7 x) (MkFoo7 y) = Yes $ decEq @{baf} x y
+  -- decEq (MkFoo8 {g=x0} x) (MkFoo8 {g=y0} y) = assert_total $ case (decEq x0 y0, decEq x y) of
+  --   (Yes Refl,Yes Refl) => Yes Refl
+  --   (No contra,_) => No (\Refl => contra Refl)
+  -- decEq (MkFoo7 x) (MkFoo8 y) = No (\case _ impossible)
+  -- decEq (MkFoo8 x) (MkFoo7 y) = No (\case _ impossible)
+
+data FooA : Type -> Type where
+  MkFooA1 : a -> FooA a
+  MkFooA2 : (0 x : a) -> FooA a
+
+0 decEq' : DecEq a => (x : FooA a) -> (y : FooA a) -> Dec (x === y)
+decEq' (MkFooA1 x) (MkFooA1 y) = case decEq x y of Yes Refl => Yes Refl; No contra => No (\Refl => contra Refl)
+decEq' (MkFooA2 x) (MkFooA2 y) = case decEq x y of Yes Refl => Yes Refl; No contra => No (\Refl => contra Refl)
+decEq' (MkFooA1 x) (MkFooA2 y) = No (\case _ impossible)
+decEq' (MkFooA2 x) (MkFooA1 y) = No (\case _ impossible)
+
+%hint
+0 ErasedDecEq : DecEq a => DecEq (FooA a)
+ErasedDecEq = MkDecEq decEq'
+
+DecEq a => DecEq (FooA a) where
+  decEq (MkFooA1 x) (MkFooA1 y) = case decEq x y of Yes Refl => Yes Refl; No contra => No (\Refl => contra Refl)
+  decEq (MkFooA2 x) (MkFooA2 y) = ?sdffd -- case decEq @{ErasedDecEq} x y of Yes Refl => Yes Refl; No contra => No (\Refl => contra Refl)
+  decEq (MkFooA1 x) (MkFooA2 y) = No (\case _ impossible)
+  decEq (MkFooA2 x) (MkFooA1 y) = No (\case _ impossible)
+
 
 -- data FooA : Type -> Type where MkFooA : (0 x : a) -> FooA a
 
